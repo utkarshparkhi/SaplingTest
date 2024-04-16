@@ -1,6 +1,6 @@
 use crate::signing_key::SigningKey;
 use blake2b_simd::Params;
-const EXPAND_SEED: &[u8] = b"ZcashExpandSeed";
+const EXPAND_SEED: &[u8] = b"Zcash_ExpandSeed";
 pub struct PrfExpand {}
 impl PrfExpand {
     fn calc(sk: SigningKey, t: &u8) -> [u8; 64] {

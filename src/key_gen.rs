@@ -1,20 +1,12 @@
 use crate::signing_key::SigningKey;
 use crate::PRF::prf_expand::PrfExpand;
-use ark_ec::Group;
-use ark_ed_on_bls12_381::EdwardsProjective;
-use ark_ff::{BigInt, BigInteger};
-
-pub struct SpendAuthorizationKey(pub EdwardsProjective);
+use ark_ed_on_bls12_381::Fr;
+use ark_ff::PrimeField;
+pub struct SpendAuthorizationKey(pub Fr);
 
 impl From<[u8; 64]> for SpendAuthorizationKey {
     fn from(value: [u8; 64]) -> Self {
-        let bits: Vec<bool> = value
-            .iter()
-            .flat_map(|&byte| (0..8).rev().map(move |i| (byte >> i) & 1 == 1))
-            .collect();
-
-        let big_int: BigInt<8> = BigInt::from_bits_le(&bits);
-        Self(EdwardsProjective::generator().mul_bigint(big_int))
+        SpendAuthorizationKey(Fr::from_le_bytes_mod_order(&value))
     }
 }
 
@@ -25,7 +17,7 @@ impl SpendAuthorizationKey {
     }
 }
 
-pub struct ProofAuthorizationKey(pub EdwardsProjective);
+pub struct ProofAuthorizationKey(pub Fr);
 impl ProofAuthorizationKey {
     pub fn new(sk: SigningKey) -> Self {
         let prf = PrfExpand::calc_nsk(sk);
@@ -34,20 +26,38 @@ impl ProofAuthorizationKey {
 }
 #[cfg(test)]
 mod tests {
-    use ark_std::rand;
-
     use crate::signing_key::SigningKey;
+    use ark_ff::{BigInteger, PrimeField};
 
     use super::SpendAuthorizationKey;
     #[test]
-    pub fn test_rand_sk() {
-        let mut rng = rand::thread_rng();
+    pub fn test_from_prf() {
+        let prf: [u8; 64] = [
+            235, 147, 48, 48, 145, 176, 19, 191, 157, 67, 99, 224, 147, 110, 233, 123, 161, 28,
+            130, 200, 111, 155, 179, 72, 124, 120, 211, 74, 195, 195, 52, 93, 210, 151, 20, 125,
+            87, 188, 32, 181, 117, 245, 141, 227, 249, 95, 139, 11, 184, 132, 143, 136, 188, 145,
+            198, 129, 154, 165, 83, 196, 155, 42, 106, 26,
+        ];
+        let ask = SpendAuthorizationKey::from(prf);
+
+        let eask = [
+            14_u8, 205, 90, 238, 23, 159, 250, 205, 212, 1, 166, 13, 83, 234, 140, 55, 61, 74, 210,
+            17, 50, 131, 194, 125, 63, 194, 155, 101, 185, 184, 27, 4,
+        ];
+        assert_eq!(ask.0.into_bigint().to_bytes_le(), eask)
+    }
+    #[test]
+    pub fn test_from_sk() {
         let sk: SigningKey = &[
-            0x18, 0xe2, 0x8d, 0xea, 0x5c, 0x11, 0x81, 0x7a, 0xee, 0xb2, 0x1a, 0x19, 0x98, 0x1d,
-            0x28, 0x36, 0x8e, 0xc4, 0x38, 0xaf, 0xc2, 0x5a, 0x8d, 0xb9, 0x4e, 0xbe, 0x08, 0xd7,
-            0xa0, 0x28, 0x8e, 0x09,
+            24, 226, 141, 234, 92, 17, 129, 122, 238, 178, 26, 25, 152, 29, 40, 54, 142, 196, 56,
+            175, 194, 90, 141, 185, 78, 190, 8, 215, 160, 40, 142, 9,
         ];
         let ask = SpendAuthorizationKey::new(sk);
-        println!("{:?}", ask.0.into())
+
+        let eask = [
+            14_u8, 205, 90, 238, 23, 159, 250, 205, 212, 1, 166, 13, 83, 234, 140, 55, 61, 74, 210,
+            17, 50, 131, 194, 125, 63, 194, 155, 101, 185, 184, 27, 4,
+        ];
+        assert_eq!(ask.0.into_bigint().to_bytes_le(), eask)
     }
 }
