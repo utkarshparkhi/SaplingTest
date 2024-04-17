@@ -1,6 +1,7 @@
 use crate::signing_key::SigningKey;
 use crate::PRF::prf_expand::PrfExpand;
-use ark_ed_on_bls12_381::Fr;
+use ark_crypto_primitives::signature::schnorr::{self, Schnorr};
+use ark_ed_on_bls12_381::{EdwardsProjective, Fr};
 use ark_ff::PrimeField;
 pub struct SpendAuthorizationKey(pub Fr);
 
@@ -24,8 +25,27 @@ impl ProofAuthorizationKey {
         ProofAuthorizationKey(SpendAuthorizationKey::from(prf).0)
     }
 }
+pub type OutgoingViewKey = [u8;32];
+pub type AuthorizingKey = schnorr::PublicKey<EdwardsProjective>;
+pub struct Keychain<'a>{
+    sk: SigningKey<'a>,
+    ask: SpendAuthorizationKey,
+    nsk: ProofAuthorizationKey,
+    ovk: OutgoingViewKey,
+}
+
+impl<'a> From<SigningKey<'a>> for Keychain<'a> {
+    fn from(sk: SigningKey<'a>) -> Self {
+    Keychain {
+        sk,
+            ask: SpendAuthorizationKey::new(sk),
+            nsk: ProofAuthorizationKey::new(sk),
+            ovk: [0;32],
+        }
+    }
+}
 #[cfg(test)]
-mod tests {
+mod tests{
     use crate::signing_key::SigningKey;
     use ark_ff::{BigInteger, PrimeField};
 

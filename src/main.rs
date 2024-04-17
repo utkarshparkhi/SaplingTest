@@ -1,7 +1,6 @@
 pub mod PRF;
 pub mod key_gen;
 pub mod signing_key;
-use ark_ff::BigInt;
 use ark_std::rand;
 use rand::Rng;
 
