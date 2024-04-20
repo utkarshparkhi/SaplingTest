@@ -1,4 +1,5 @@
 pub mod PRF;
+pub mod group_hash;
 pub mod key_gen;
 pub mod signing_key;
 use ark_std::rand;
@@ -13,9 +14,11 @@ fn main() {
         rng.fill(&mut sk_raw);
         let sk: SigningKey = &sk_raw;
 
-        let ask = key_gen::SpendAuthorizationKey::new(sk);
-        println!("Sk={:?}", sk);
-        println!("ask={:?}", ask.0);
+        let kc = key_gen::Keychain::from(sk);
+        println!("ask: {:?}", kc.ask);
+        println!("nsk: {:?}", kc.nsk);
+        println!("ovk: {:?}", kc.ovk);
+        println!("ak: {:?}", kc.ak);
+        println!("params: {:?}", kc.parameters);
     }
-    println!("Hello, world!");
 }

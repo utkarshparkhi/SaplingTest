@@ -18,4 +18,7 @@ impl PrfExpand {
     pub fn calc_nsk(sk: SigningKey) -> [u8; 64] {
         Self::calc(sk, &1u8)
     }
+    pub fn calc_ovk(sk: SigningKey) -> [u8; 64] {
+        Self::calc(sk, &2u8)
+    }
 }

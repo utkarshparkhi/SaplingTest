@@ -255,6 +255,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake2s_simd"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94230421e395b9920d23df13ea5d77a20e1725331f90fbbf6df6040b33f756ae"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "constant_time_eq",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -607,7 +618,9 @@ dependencies = [
  "ark-serialize",
  "ark-std",
  "ark-test-curves",
+ "blake2",
  "blake2b_simd",
+ "blake2s_simd",
  "rand",
 ]
 
