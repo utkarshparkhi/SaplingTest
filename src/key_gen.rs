@@ -1,64 +1,65 @@
 use crate::group_hash;
 use crate::signing_key::SigningKey;
-use crate::PRF::prf_expand::PrfExpand;
+use crate::PRF::prf_expand::{Crh, PrfExpand};
 use ark_crypto_primitives::signature::schnorr::{self, Parameters};
 use ark_crypto_primitives::signature::SignatureScheme;
 use ark_ed_on_bls12_381::{EdwardsProjective, Fr};
-use ark_ff::PrimeField;
+use ark_ff::{BigInteger, BigInteger256, PrimeField};
 use ark_std::ops::Mul;
 use blake2::Blake2b512;
 use rand::thread_rng;
-#[derive(Debug)]
-pub struct SpendAuthorizationKey(pub Fr);
+pub type SecretKey = schnorr::SecretKey<EdwardsProjective>;
 
-impl From<[u8; 64]> for SpendAuthorizationKey {
-    fn from(value: [u8; 64]) -> Self {
-        SpendAuthorizationKey(Fr::from_le_bytes_mod_order(&value))
-    }
-}
-
-impl SpendAuthorizationKey {
-    pub fn new(sk: SigningKey) -> Self {
-        let prf = PrfExpand::calc_ask(sk);
-        SpendAuthorizationKey::from(prf)
-    }
-}
-#[derive(Debug)]
-pub struct ProofAuthorizationKey(pub Fr);
-impl ProofAuthorizationKey {
-    pub fn new(sk: SigningKey) -> Self {
-        let prf = PrfExpand::calc_nsk(sk);
-        ProofAuthorizationKey(SpendAuthorizationKey::from(prf).0)
-    }
-}
 pub type OutgoingViewKey = [u8; 32];
-pub type AuthorizingKey = schnorr::PublicKey<EdwardsProjective>;
+#[derive(Debug)]
+pub struct PublicKey(schnorr::PublicKey<EdwardsProjective>);
 pub struct Keychain<'a> {
     pub sk: SigningKey<'a>,
-    pub ask: SpendAuthorizationKey,
-    pub nsk: ProofAuthorizationKey,
+    pub ask: SecretKey,
+    pub nsk: SecretKey,
     pub ovk: OutgoingViewKey,
+    pub ivk: SecretKey,
+    pub nk: PublicKey,
     pub parameters: schnorr::Parameters<EdwardsProjective, Blake2b512>,
-    pub ak: AuthorizingKey,
+    pub ak: PublicKey,
+}
+impl PublicKey {
+    pub fn to_repr_j(&self) -> [u8; 32] {
+        let mut rep: BigInteger256 = self.0.y.into();
+        let rep1: BigInteger256 = BigInteger256::from(self.0.x);
+        let mut rep1: BigInteger256 = (rep1.is_odd() as u8).into();
+        rep1.muln(255);
+        rep.add_with_carry(&rep1);
+        let mut ret = [0u8; 32];
+        ret.copy_from_slice(&rep.to_bytes_le()[..32]);
+        ret
+    }
 }
 impl<'a> From<SigningKey<'a>> for Keychain<'a> {
     fn from(sk: SigningKey<'a>) -> Self {
-        let ask = SpendAuthorizationKey::new(sk);
-
+        let ask: SecretKey =
+            schnorr::SecretKey(Fr::from_le_bytes_mod_order(&PrfExpand::calc_ask(sk)));
+        let nsk = schnorr::SecretKey(Fr::from_le_bytes_mod_order(&PrfExpand::calc_nsk(sk)));
         let mut rng = thread_rng();
-        let mut params: Parameters<EdwardsProjective, Blake2b512> =
+        let mut parameters: Parameters<EdwardsProjective, Blake2b512> =
             schnorr::Schnorr::<EdwardsProjective, Blake2b512>::setup(&mut rng).unwrap();
-        params.generator = group_hash::group_hash_spend_auth();
-        let ak = params.generator.mul(ask.0).into();
-
+        parameters.generator = group_hash::group_hash_spend_auth();
+        let ak: PublicKey = PublicKey(parameters.generator.mul(ask.0).into());
+        let nk: PublicKey = PublicKey(group_hash::group_hash_h_sapling().mul(nsk.0).into());
         let mut ovk: [u8; 32] = [0; 32];
         ovk.copy_from_slice(&PrfExpand::calc_ovk(sk)[..32]);
+        let ivk = schnorr::SecretKey(Crh::calc(&ak.to_repr_j(), &nk.to_repr_j()));
+        println!("ak_repr : {:?}", ak.to_repr_j());
+        println!("nk_repr : {:?}", nk.to_repr_j());
+
         Keychain {
             sk,
             ask,
-            nsk: ProofAuthorizationKey::new(sk),
+            nsk,
             ovk,
-            parameters: params,
+            ivk,
+            nk,
+            parameters,
             ak,
         }
     }
@@ -68,7 +69,7 @@ mod tests {
     use crate::signing_key::SigningKey;
     use ark_ff::{BigInteger, PrimeField};
 
-    use super::{Keychain, SpendAuthorizationKey};
+    use super::Keychain;
     const SK: SigningKey = &[
         24, 226, 141, 234, 92, 17, 129, 122, 238, 178, 26, 25, 152, 29, 40, 54, 142, 196, 56, 175,
         194, 90, 141, 185, 78, 190, 8, 215, 160, 40, 142, 9,
@@ -77,28 +78,10 @@ mod tests {
         14_u8, 205, 90, 238, 23, 159, 250, 205, 212, 1, 166, 13, 83, 234, 140, 55, 61, 74, 210, 17,
         50, 131, 194, 125, 63, 194, 155, 101, 185, 184, 27, 4,
     ];
-
-    #[test]
-    pub fn test_from_prf() {
-        let prf: [u8; 64] = [
-            235, 147, 48, 48, 145, 176, 19, 191, 157, 67, 99, 224, 147, 110, 233, 123, 161, 28,
-            130, 200, 111, 155, 179, 72, 124, 120, 211, 74, 195, 195, 52, 93, 210, 151, 20, 125,
-            87, 188, 32, 181, 117, 245, 141, 227, 249, 95, 139, 11, 184, 132, 143, 136, 188, 145,
-            198, 129, 154, 165, 83, 196, 155, 42, 106, 26,
-        ];
-        let ask = SpendAuthorizationKey::from(prf);
-
-        let eask = EASK;
-        assert_eq!(ask.0.into_bigint().to_bytes_le(), eask)
-    }
-    #[test]
-    pub fn test_from_sk() {
-        let sk: SigningKey = SK;
-        let ask = SpendAuthorizationKey::new(sk);
-
-        let eask = EASK;
-        assert_eq!(ask.0.into_bigint().to_bytes_le(), eask)
-    }
+    const EIVK: [u8; 32] = [
+        162, 159, 59, 178, 16, 189, 223, 176, 99, 86, 247, 67, 215, 146, 154, 112, 191, 254, 50,
+        78, 104, 214, 15, 66, 181, 235, 78, 158, 91, 167, 240, 2,
+    ];
     #[test]
     pub fn test_kc_from_sk() {
         let sk: SigningKey = SK;
@@ -108,7 +91,11 @@ mod tests {
         println!("nsk: {:?}", kc.nsk);
         println!("ovk: {:?}", kc.ovk);
         println!("ak: {:?}", kc.ak);
+        println!("nk: {:?}", kc.nk);
+        println!("ivk: {:?}", kc.ivk.0.into_bigint().to_bytes_le());
         println!("params: {:?}", kc.parameters);
-        assert_eq!(kc.ask.0.into_bigint().to_bytes_le(), eask)
+        assert_eq!(kc.ask.0.into_bigint().to_bytes_le(), eask);
+
+        assert_eq!(EIVK.to_vec(), kc.ivk.0.into_bigint().to_bytes_le());
     }
 }
