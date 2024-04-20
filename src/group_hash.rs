@@ -5,6 +5,7 @@ use blake2s_simd::Params;
 pub const GH_FIRST_BLOCK: &[u8; 64] =
     b"096b36a5804bfacef1691e173c366a47ff5ba84a44f26ddd7e8d9f79d5b42df0";
 pub const SPEND_AUTH_GEN: &[u8] = b"Zcash_G_";
+pub const DIVERSIFY_HASH: &[u8] = b"Zcash_gd";
 pub const ZCASH_H: &[u8] = b"Zcash_H_";
 pub fn group_hash(tag: &[u8], personal: &[u8]) -> Option<EdwardsAffine> {
     let h = Params::new()
@@ -43,6 +44,9 @@ pub fn group_hash_spend_auth() -> EdwardsAffine {
 }
 pub fn group_hash_h_sapling() -> EdwardsAffine {
     calc_group_hash(&[], ZCASH_H)
+}
+pub fn deiversify_hash(d: &[u8]) -> Option<EdwardsAffine> {
+    group_hash(d, DIVERSIFY_HASH)
 }
 #[cfg(test)]
 pub mod test {

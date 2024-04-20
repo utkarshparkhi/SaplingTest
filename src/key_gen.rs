@@ -3,11 +3,11 @@ use crate::signing_key::SigningKey;
 use crate::PRF::prf_expand::{Crh, PrfExpand};
 use ark_crypto_primitives::signature::schnorr::{self, Parameters};
 use ark_crypto_primitives::signature::SignatureScheme;
-use ark_ed_on_bls12_381::{EdwardsProjective, Fr};
+use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective, Fr};
 use ark_ff::{BigInteger, BigInteger256, PrimeField};
 use ark_std::ops::Mul;
 use blake2::Blake2b512;
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
 pub type SecretKey = schnorr::SecretKey<EdwardsProjective>;
 
 pub type OutgoingViewKey = [u8; 32];
@@ -64,6 +64,22 @@ impl<'a> From<SigningKey<'a>> for Keychain<'a> {
         }
     }
 }
+impl<'a> Keychain<'a> {
+    pub fn get_diversified_transmission_key(&self) -> PublicKey {
+        let mut d: [u8; 11] = [0; 11];
+        let mut gd: Option<EdwardsAffine>;
+        let mut rng = thread_rng();
+        loop {
+            rng.fill(&mut d);
+            gd = group_hash::deiversify_hash(&d);
+            if gd.is_some() {
+                break;
+            }
+        }
+        let gd = gd.unwrap();
+        PublicKey(gd.mul(self.ivk.0).into())
+    }
+}
 #[cfg(test)]
 mod tests {
     use crate::signing_key::SigningKey;
@@ -97,5 +113,14 @@ mod tests {
         assert_eq!(kc.ask.0.into_bigint().to_bytes_le(), eask);
 
         assert_eq!(EIVK.to_vec(), kc.ivk.0.into_bigint().to_bytes_le());
+    }
+    #[test]
+    pub fn test_diversify_hash() {
+        let sk: SigningKey = SK;
+        let kc = Keychain::from(sk);
+        println!(
+            "diversify hash: {:?}",
+            kc.get_diversified_transmission_key()
+        );
     }
 }
