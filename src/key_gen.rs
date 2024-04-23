@@ -3,16 +3,19 @@ use crate::signing_key::SigningKey;
 use crate::PRF::prf_expand::{Crh, PrfExpand};
 use ark_crypto_primitives::signature::schnorr::{self, Parameters};
 use ark_crypto_primitives::signature::SignatureScheme;
+use ark_ec::AffineRepr;
 use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective, Fr};
-use ark_ff::{BigInteger, BigInteger256, PrimeField};
+use ark_ff::PrimeField;
+use ark_serialize::CanonicalSerialize;
 use ark_std::ops::Mul;
 use blake2::Blake2b512;
 use rand::{thread_rng, Rng};
 pub type SecretKey = schnorr::SecretKey<EdwardsProjective>;
-
+pub type Signature = schnorr::Signature<EdwardsProjective>;
 pub type OutgoingViewKey = [u8; 32];
 #[derive(Debug)]
-pub struct PublicKey(schnorr::PublicKey<EdwardsProjective>);
+pub struct PublicKey(pub schnorr::PublicKey<EdwardsProjective>);
+
 pub struct Keychain<'a> {
     pub sk: SigningKey<'a>,
     pub ask: SecretKey,
@@ -25,14 +28,9 @@ pub struct Keychain<'a> {
 }
 impl PublicKey {
     pub fn to_repr_j(&self) -> [u8; 32] {
-        let mut rep: BigInteger256 = self.0.y.into();
-        let rep1: BigInteger256 = BigInteger256::from(self.0.x);
-        let mut rep1: BigInteger256 = (rep1.is_odd() as u8).into();
-        rep1.muln(255);
-        rep.add_with_carry(&rep1);
-        let mut ret = [0u8; 32];
-        ret.copy_from_slice(&rep.to_bytes_le()[..32]);
-        ret
+        let mut ser: [u8; 32] = [0; 32];
+        self.0.serialize_compressed(&mut ser[..]).unwrap();
+        ser
     }
 }
 impl<'a> From<SigningKey<'a>> for Keychain<'a> {
@@ -49,9 +47,6 @@ impl<'a> From<SigningKey<'a>> for Keychain<'a> {
         let mut ovk: [u8; 32] = [0; 32];
         ovk.copy_from_slice(&PrfExpand::calc_ovk(sk)[..32]);
         let ivk = schnorr::SecretKey(Crh::calc(&ak.to_repr_j(), &nk.to_repr_j()));
-        println!("ak_repr : {:?}", ak.to_repr_j());
-        println!("nk_repr : {:?}", nk.to_repr_j());
-
         Keychain {
             sk,
             ask,
@@ -65,19 +60,29 @@ impl<'a> From<SigningKey<'a>> for Keychain<'a> {
     }
 }
 impl<'a> Keychain<'a> {
-    pub fn get_diversified_transmission_key(&self) -> PublicKey {
+    pub fn get_diversified_transmission_address(&self) -> ([u8; 11], PublicKey) {
         let mut d: [u8; 11] = [0; 11];
         let mut gd: Option<EdwardsAffine>;
         let mut rng = thread_rng();
         loop {
             rng.fill(&mut d);
-            gd = group_hash::deiversify_hash(&d);
+            gd = group_hash::diversify_hash(&d);
             if gd.is_some() {
                 break;
             }
         }
         let gd = gd.unwrap();
-        PublicKey(gd.mul(self.ivk.0).into())
+        (d, PublicKey(gd.mul(self.ivk.0).into()))
+    }
+    pub fn default_diversifier(&self) -> Option<[u8; 11]> {
+        for i in 0..=255_u8 {
+            let d = PrfExpand::calc_default_diversified(self.sk, i);
+            let gd = group_hash::diversify_hash(&d);
+            if gd.is_some() {
+                return Some(d);
+            }
+        }
+        None
     }
 }
 #[cfg(test)]
@@ -120,7 +125,7 @@ mod tests {
         let kc = Keychain::from(sk);
         println!(
             "diversify hash: {:?}",
-            kc.get_diversified_transmission_key()
+            kc.get_diversified_transmission_address()
         );
     }
 }

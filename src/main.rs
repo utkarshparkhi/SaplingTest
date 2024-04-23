@@ -1,7 +1,11 @@
 pub mod PRF;
+pub mod address;
+pub mod commitment;
 pub mod group_hash;
 pub mod key_gen;
+pub mod pedersen_crh;
 pub mod signing_key;
+pub mod spend_description;
 use ark_std::rand;
 use rand::Rng;
 

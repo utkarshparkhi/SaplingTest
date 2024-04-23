@@ -7,6 +7,7 @@ pub const GH_FIRST_BLOCK: &[u8; 64] =
 pub const SPEND_AUTH_GEN: &[u8] = b"Zcash_G_";
 pub const DIVERSIFY_HASH: &[u8] = b"Zcash_gd";
 pub const ZCASH_H: &[u8] = b"Zcash_H_";
+pub const ZCASH_PEDERSEN_GENERATORS: &[u8] = b"Zcash_PH";
 pub fn group_hash(tag: &[u8], personal: &[u8]) -> Option<EdwardsAffine> {
     let h = Params::new()
         .hash_length(32)
@@ -15,11 +16,13 @@ pub fn group_hash(tag: &[u8], personal: &[u8]) -> Option<EdwardsAffine> {
         .update(GH_FIRST_BLOCK)
         .update(tag)
         .finalize();
+    println!("Here : {:?} {:?} {:?}", tag, personal, h.as_array());
     let p: Option<EdwardsAffine> = EdwardsAffine::from_random_bytes(h.as_array());
     p.map(|p| {
         if !p.is_zero() {
             let mut p = p.clear_cofactor();
-            p.x = -p.x;
+            //p.x = -p.x;
+            //
             Some(p)
         } else {
             None
@@ -35,6 +38,7 @@ pub fn calc_group_hash(tag: &[u8], personal: &[u8]) -> EdwardsAffine {
         tag[i] += 1;
         assert_ne!(tag[0], u8::max_value());
         if let Some(gh) = gh {
+            println!("FOUND: {:?} ,{:?}", i, gh);
             return gh;
         }
     }
@@ -45,8 +49,11 @@ pub fn group_hash_spend_auth() -> EdwardsAffine {
 pub fn group_hash_h_sapling() -> EdwardsAffine {
     calc_group_hash(&[], ZCASH_H)
 }
-pub fn deiversify_hash(d: &[u8]) -> Option<EdwardsAffine> {
+pub fn diversify_hash(d: &[u8]) -> Option<EdwardsAffine> {
     group_hash(d, DIVERSIFY_HASH)
+}
+pub fn pedersen_generator(i: &[u8]) -> EdwardsAffine {
+    calc_group_hash(i, ZCASH_PEDERSEN_GENERATORS)
 }
 #[cfg(test)]
 pub mod test {
@@ -92,7 +99,7 @@ pub mod test {
             Fq::from_random_bytes(&fq1n).unwrap(),
             Fq::from_random_bytes(&fq2n).unwrap(),
         );
-        //proof_generation_key_generator.x = -proof_generation_key_generator.x;
+        proof_generation_key_generator.x = -proof_generation_key_generator.x;
         assert_eq!(group_hash_spend_auth(), proof_generation_key_generator)
     }
 }
