@@ -16,11 +16,10 @@ pub fn group_hash(tag: &[u8], personal: &[u8]) -> Option<EdwardsAffine> {
         .update(GH_FIRST_BLOCK)
         .update(tag)
         .finalize();
-    println!("Here : {:?} {:?} {:?}", tag, personal, h.as_array());
     let p: Option<EdwardsAffine> = EdwardsAffine::from_random_bytes(h.as_array());
     p.map(|p| {
         if !p.is_zero() {
-            let mut p = p.clear_cofactor();
+            let p = p.clear_cofactor();
             //p.x = -p.x;
             //
             Some(p)
@@ -38,7 +37,6 @@ pub fn calc_group_hash(tag: &[u8], personal: &[u8]) -> EdwardsAffine {
         tag[i] += 1;
         assert_ne!(tag[0], u8::max_value());
         if let Some(gh) = gh {
-            println!("FOUND: {:?} ,{:?}", i, gh);
             return gh;
         }
     }

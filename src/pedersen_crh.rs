@@ -10,20 +10,21 @@ impl pedersen::Window for Window {
     const NUM_WINDOWS: usize = 63;
 }
 
-pub fn get_pedersen_generators() -> Vec<Vec<ark_ed_on_bls12_381::EdwardsProjective>> {
+pub fn get_pedersen_generators() -> Vec<ark_ed_on_bls12_381::EdwardsProjective> {
     let mut vc: Vec<EdwardsProjective> = vec![];
-    for i in 0..6 {
+    for i in 0..63 {
         let eda = group_hash::pedersen_generator(&(i as u32).to_le_bytes());
         let edpt = EdwardsProjective::from(eda);
 
         vc.push(edpt);
     }
-    vec![vc]
+    vc
 }
 
 #[cfg(test)]
 pub mod test {
     use super::*;
+    use ark_ed_on_bls12_381::EdwardsAffine;
     use ark_ed_on_bls12_381::Fq;
     use ark_ff::PrimeField;
     use ark_serialize::CanonicalSerialize;
@@ -128,12 +129,12 @@ pub mod test {
         ));
         let mut vbytes: [u8; 32] = [0; 32];
         let mut evbytes: [u8; 32] = [0; 32];
-        v[0][0].serialize_compressed(&mut vbytes[..]).unwrap();
+        v[0].serialize_compressed(&mut vbytes[..]).unwrap();
         ev.serialize_compressed(&mut evbytes[..]).unwrap();
-        println!("v :{:?}", v[0][0]);
+        println!("v :{:?}", v[0]);
         println!("vb : {:?}", vbytes);
         println!("ev : {:?}", ev);
         println!("evb : {:?}", evbytes);
-        assert_eq!(ev, v[0][0]);
+        assert_eq!(ev, v[0]);
     }
 }
