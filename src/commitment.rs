@@ -1,13 +1,16 @@
+use crate::group_hash;
+use crate::note::NoteValue;
 use crate::pedersen_crh;
 use crate::pedersen_crh::Window;
 use ark_crypto_primitives::commitment::pedersen;
 use ark_crypto_primitives::commitment::pedersen::Window as pdWindow;
 use ark_crypto_primitives::commitment::CommitmentScheme;
-use ark_ec::{AffineRepr, Group};
+use ark_ec::AffineRepr;
 use ark_ed_on_bls12_381::Fq;
 use ark_ed_on_bls12_381::Fr;
 use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective};
 use ark_ff::PrimeField;
+use ark_std::rand::{thread_rng, Rng};
 use ark_std::Zero;
 const X: [u8; 32] = [
     98, 100, 227, 168, 52, 59, 20, 165, 218, 236, 177, 255, 6, 157, 145, 240, 44, 236, 59, 243,
@@ -18,7 +21,6 @@ const Y: [u8; 32] = [
     132, 1, 201, 222, 122, 42, 223, 24, 7, 209, 182, 84,
 ];
 
-use ark_std::rand::thread_rng;
 pub struct Commitment {
     params: pedersen::Parameters<ark_ed_on_bls12_381::EdwardsProjective>,
 }
@@ -48,12 +50,31 @@ impl Commitment {
         Self { params }
     }
 }
+pub struct ValueCommitTrapdoor(ark_ed_on_bls12_381::Fr);
+impl ValueCommitTrapdoor {
+    pub fn random() -> Self {
+        let mut rng = thread_rng();
+        let mut a: [u8; 64] = [0; 64];
+        rng.fill(&mut a);
+        Self(Fr::from_le_bytes_mod_order(&a))
+    }
+}
+pub fn homomorphic_pedersen_commitment(
+    val: NoteValue,
+    rcv: &ValueCommitTrapdoor,
+) -> EdwardsProjective {
+    let v_sap = group_hash::calc_v_sapling();
+    let r_sap = group_hash::calc_r_sapling();
+    let v = Fr::from(val.0);
+    v_sap * v + r_sap * rcv.0
+}
 #[cfg(test)]
 pub mod test {
     use super::*;
     use crate::pedersen_crh::Window;
     use ark_crypto_primitives::commitment::pedersen::{Commitment as pdCommit, Randomness};
     use ark_crypto_primitives::commitment::CommitmentScheme;
+    use ark_ec::Group;
     use ark_ed_on_bls12_381::Fr;
     use ark_std::One;
     #[test]
@@ -74,5 +95,13 @@ pub mod test {
         ]
         .concat();
         println!("{:?}", y);
+    }
+    #[test]
+    pub fn test_homo() {
+        let rcm = ValueCommitTrapdoor::random();
+        let mut cm_1 = homomorphic_pedersen_commitment(NoteValue(1), &rcm);
+        let cm_2 = homomorphic_pedersen_commitment(NoteValue(2), &rcm);
+        let cm_3 = homomorphic_pedersen_commitment(NoteValue(3), &rcm);
+        assert_eq!(*cm_1.double_in_place(), cm_2);
     }
 }

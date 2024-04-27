@@ -8,6 +8,7 @@ pub const SPEND_AUTH_GEN: &[u8] = b"Zcash_G_";
 pub const DIVERSIFY_HASH: &[u8] = b"Zcash_gd";
 pub const ZCASH_H: &[u8] = b"Zcash_H_";
 pub const ZCASH_PEDERSEN_GENERATORS: &[u8] = b"Zcash_PH";
+pub const ZCASH_CV: &[u8] = b"Zcash_cv";
 pub fn group_hash(tag: &[u8], personal: &[u8]) -> Option<EdwardsAffine> {
     let h = Params::new()
         .hash_length(32)
@@ -52,6 +53,12 @@ pub fn diversify_hash(d: &[u8]) -> Option<EdwardsAffine> {
 }
 pub fn pedersen_generator(i: &[u8]) -> EdwardsAffine {
     calc_group_hash(i, ZCASH_PEDERSEN_GENERATORS)
+}
+pub fn calc_v_sapling() -> EdwardsAffine {
+    calc_group_hash(b"v", ZCASH_CV)
+}
+pub fn calc_r_sapling() -> EdwardsAffine {
+    calc_group_hash(b"r", ZCASH_CV)
 }
 #[cfg(test)]
 pub mod test {

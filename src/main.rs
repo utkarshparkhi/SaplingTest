@@ -3,6 +3,8 @@ pub mod address;
 pub mod commitment;
 pub mod group_hash;
 pub mod key_gen;
+pub mod note;
+pub mod output_description;
 pub mod pedersen_crh;
 pub mod signing_key;
 pub mod spend_description;
