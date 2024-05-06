@@ -50,7 +50,8 @@ impl Commitment {
         Self { params }
     }
 }
-pub struct ValueCommitTrapdoor(ark_ed_on_bls12_381::Fr);
+#[derive(Clone)]
+pub struct ValueCommitTrapdoor(pub ark_ed_on_bls12_381::Fr);
 impl ValueCommitTrapdoor {
     pub fn random() -> Self {
         let mut rng = thread_rng();
@@ -74,8 +75,11 @@ pub mod test {
     use crate::pedersen_crh::Window;
     use ark_crypto_primitives::commitment::pedersen::{Commitment as pdCommit, Randomness};
     use ark_crypto_primitives::commitment::CommitmentScheme;
-    use ark_ec::Group;
+    use ark_ec::AffineRepr;
+    use ark_ec::CurveGroup;
     use ark_ed_on_bls12_381::Fr;
+    use ark_ff::Field;
+    use ark_ff::PrimeField;
     use ark_std::One;
     #[test]
     pub fn comm_test() {
@@ -101,7 +105,13 @@ pub mod test {
         let rcm = ValueCommitTrapdoor::random();
         let mut cm_1 = homomorphic_pedersen_commitment(NoteValue(1), &rcm);
         let cm_2 = homomorphic_pedersen_commitment(NoteValue(2), &rcm);
-        let cm_3 = homomorphic_pedersen_commitment(NoteValue(3), &rcm);
-        assert_eq!(*cm_1.double_in_place(), cm_2);
+        let cm_3 = homomorphic_pedersen_commitment(
+            NoteValue(3),
+            &ValueCommitTrapdoor(rcm.clone().0 * Fr::from(2)),
+        );
+        assert_eq!(
+            (cm_1.into_affine() + cm_2.into_affine()).into_affine(),
+            cm_3.into_affine()
+        );
     }
 }

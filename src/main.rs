@@ -9,6 +9,7 @@ pub mod pedersen_crh;
 pub mod signing_key;
 pub mod spend_description;
 use ark_std::rand;
+pub mod circuit;
 use rand::Rng;
 
 use crate::signing_key::SigningKey;

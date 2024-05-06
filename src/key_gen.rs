@@ -5,17 +5,19 @@ use ark_crypto_primitives::signature::schnorr::{self, Parameters};
 use ark_crypto_primitives::signature::SignatureScheme;
 use ark_ec::AffineRepr;
 use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective, Fr};
-use ark_ff::PrimeField;
+use ark_ff::{BigInteger, PrimeField};
 use ark_serialize::CanonicalSerialize;
 use ark_std::ops::Mul;
+use ark_std::rand::distributions::{Distribution, Standard};
+use ark_std::rand::prelude::*;
 use blake2::Blake2b512;
 use rand::{thread_rng, Rng};
 pub type SecretKey = schnorr::SecretKey<EdwardsProjective>;
 pub type Signature = schnorr::Signature<EdwardsProjective>;
 pub type OutgoingViewKey = [u8; 32];
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PublicKey(pub schnorr::PublicKey<EdwardsProjective>);
-
+pub type Params = schnorr::Parameters<EdwardsProjective, Blake2b512>;
 pub struct Keychain<'a> {
     pub sk: SigningKey<'a>,
     pub ask: SecretKey,
@@ -83,6 +85,31 @@ impl<'a> Keychain<'a> {
             }
         }
         None
+    }
+    pub fn get_randomized_ak(&self) -> (Vec<u8>, PublicKey) {
+        let rng = thread_rng();
+        let alpha: Fr = StdRng::from_rng(rng).expect("failed").sample(Standard);
+        let ar = schnorr::Schnorr::<EdwardsProjective, Blake2b512>::randomize_public_key(
+            &self.parameters,
+            &self.ak.0,
+            &alpha.0.to_bytes_le(),
+        )
+        .expect("failed");
+        let alpha_bytes = alpha.0.to_bytes_le();
+        (alpha_bytes, PublicKey(ar))
+    }
+}
+#[derive(Clone)]
+pub struct ProofGenerationKey {
+    pub ak: PublicKey,
+    pub nsk: SecretKey,
+}
+impl<'a> Into<ProofGenerationKey> for Keychain<'a> {
+    fn into(self) -> ProofGenerationKey {
+        ProofGenerationKey {
+            ak: self.ak,
+            nsk: self.nsk,
+        }
     }
 }
 #[cfg(test)]
