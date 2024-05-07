@@ -6,10 +6,12 @@ use ark_crypto_primitives::commitment::pedersen;
 use ark_crypto_primitives::commitment::pedersen::Window as pdWindow;
 use ark_crypto_primitives::commitment::CommitmentScheme;
 use ark_ec::AffineRepr;
+use ark_ec::CurveGroup;
 use ark_ed_on_bls12_381::Fq;
 use ark_ed_on_bls12_381::Fr;
 use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective};
 use ark_ff::PrimeField;
+use ark_relations::r1cs::ConstraintSynthesizer;
 use ark_std::rand::{thread_rng, Rng};
 use ark_std::Zero;
 const X: [u8; 32] = [
@@ -50,7 +52,7 @@ impl Commitment {
         Self { params }
     }
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ValueCommitTrapdoor(pub ark_ed_on_bls12_381::Fr);
 impl ValueCommitTrapdoor {
     pub fn random() -> Self {
@@ -60,14 +62,12 @@ impl ValueCommitTrapdoor {
         Self(Fr::from_le_bytes_mod_order(&a))
     }
 }
-pub fn homomorphic_pedersen_commitment(
-    val: NoteValue,
-    rcv: &ValueCommitTrapdoor,
-) -> EdwardsProjective {
+
+pub fn homomorphic_pedersen_commitment(val: NoteValue, rcv: &ValueCommitTrapdoor) -> EdwardsAffine {
     let v_sap = group_hash::calc_v_sapling();
     let r_sap = group_hash::calc_r_sapling();
     let v = Fr::from(val.0);
-    v_sap * v + r_sap * rcv.0
+    (v_sap.mul_bigint(v.0) + r_sap.mul_bigint(rcv.0 .0)).into_affine()
 }
 #[cfg(test)]
 pub mod test {
@@ -103,15 +103,12 @@ pub mod test {
     #[test]
     pub fn test_homo() {
         let rcm = ValueCommitTrapdoor::random();
-        let mut cm_1 = homomorphic_pedersen_commitment(NoteValue(1), &rcm);
+        let cm_1 = homomorphic_pedersen_commitment(NoteValue(1), &rcm);
         let cm_2 = homomorphic_pedersen_commitment(NoteValue(2), &rcm);
         let cm_3 = homomorphic_pedersen_commitment(
             NoteValue(3),
             &ValueCommitTrapdoor(rcm.clone().0 * Fr::from(2)),
         );
-        assert_eq!(
-            (cm_1.into_affine() + cm_2.into_affine()).into_affine(),
-            cm_3.into_affine()
-        );
+        assert_eq!((cm_1 + cm_2), cm_3);
     }
 }

@@ -1,4 +1,4 @@
-use crate::group_hash;
+use crate::group_hash::{self, group_hash_h_sapling, group_hash_spend_auth};
 use crate::signing_key::SigningKey;
 use crate::PRF::prf_expand::{Crh, PrfExpand};
 use ark_crypto_primitives::signature::schnorr::{self, Parameters};
@@ -7,6 +7,7 @@ use ark_ec::AffineRepr;
 use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective, Fr};
 use ark_ff::{BigInteger, PrimeField};
 use ark_serialize::CanonicalSerialize;
+use ark_std::ops::Add;
 use ark_std::ops::Mul;
 use ark_std::rand::distributions::{Distribution, Standard};
 use ark_std::rand::prelude::*;
@@ -39,13 +40,16 @@ impl<'a> From<SigningKey<'a>> for Keychain<'a> {
     fn from(sk: SigningKey<'a>) -> Self {
         let ask: SecretKey =
             schnorr::SecretKey(Fr::from_le_bytes_mod_order(&PrfExpand::calc_ask(sk)));
-        let nsk = schnorr::SecretKey(Fr::from_le_bytes_mod_order(&PrfExpand::calc_nsk(sk)));
+        let nsk: SecretKey =
+            schnorr::SecretKey(Fr::from_le_bytes_mod_order(&PrfExpand::calc_nsk(sk)));
         let mut rng = thread_rng();
         let mut parameters: Parameters<EdwardsProjective, Blake2b512> =
             schnorr::Schnorr::<EdwardsProjective, Blake2b512>::setup(&mut rng).unwrap();
         parameters.generator = group_hash::group_hash_spend_auth();
-        let ak: PublicKey = PublicKey(parameters.generator.mul(ask.0).into());
-        let nk: PublicKey = PublicKey(group_hash::group_hash_h_sapling().mul(nsk.0).into());
+        let ak: PublicKey = PublicKey(parameters.generator.mul_bigint(ask.0 .0).into());
+        let nsk_fr: Fr = Fr::from_le_bytes_mod_order(&PrfExpand::calc_nsk(sk));
+        let nk: EdwardsAffine = group_hash_h_sapling().mul_bigint(nsk_fr.0).into();
+        let nk: PublicKey = PublicKey(nk);
         let mut ovk: [u8; 32] = [0; 32];
         ovk.copy_from_slice(&PrfExpand::calc_ovk(sk)[..32]);
         let ivk = schnorr::SecretKey(Crh::calc(&ak.to_repr_j(), &nk.to_repr_j()));
@@ -86,17 +90,12 @@ impl<'a> Keychain<'a> {
         }
         None
     }
-    pub fn get_randomized_ak(&self) -> (Vec<u8>, PublicKey) {
+    pub fn get_randomized_ak(&self) -> (Fr, PublicKey) {
         let rng = thread_rng();
         let alpha: Fr = StdRng::from_rng(rng).expect("failed").sample(Standard);
-        let ar = schnorr::Schnorr::<EdwardsProjective, Blake2b512>::randomize_public_key(
-            &self.parameters,
-            &self.ak.0,
-            &alpha.0.to_bytes_le(),
-        )
-        .expect("failed");
-        let alpha_bytes = alpha.0.to_bytes_le();
-        (alpha_bytes, PublicKey(ar))
+        let ar = group_hash_spend_auth().mul_bigint(alpha.0);
+        let rk = self.ak.0.add(ar);
+        (alpha, PublicKey(rk.into()))
     }
 }
 #[derive(Clone)]

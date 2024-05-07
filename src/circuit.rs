@@ -1,10 +1,15 @@
-use crate::key_gen::{Params, PublicKey, Signature};
+use crate::commitment::ValueCommitTrapdoor;
+use crate::group_hash;
+use crate::key_gen::{Params, PublicKey};
+use crate::note::NoteValue;
 use ark_crypto_primitives::signature::schnorr::constraints::SchnorrRandomizePkGadget;
 use ark_crypto_primitives::signature::schnorr::Schnorr;
 use ark_crypto_primitives::signature::SigRandomizePkGadget;
 use ark_crypto_primitives::signature::*;
+use ark_ec::AffineRepr;
 use ark_ed_on_bls12_381::EdwardsProjective;
-use ark_ed_on_bls12_381::{constraints::EdwardsVar, EdwardsAffine, Fq, Fr};
+use ark_ed_on_bls12_381::{constraints::EdwardsVar, EdwardsAffine, Fr};
+use ark_ff::BigInteger;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
@@ -18,6 +23,12 @@ pub struct Spend<'a> {
     pub sig_params: Params,
     pub randomness: &'a [u8],
     pub randomized_ak: PublicKey,
+    pub proof_generation_key: EdwardsAffine,
+    pub nsk: Fr,
+    pub nk: EdwardsAffine,
+    pub val_cm_old: EdwardsAffine,
+    pub note_val: NoteValue,
+    pub rcv_old: ValueCommitTrapdoor,
 }
 impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
     #[tracing::instrument(target = "r1cs", skip(self, cs))]
@@ -30,6 +41,7 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
         //        ark_relations::ns!(cs, "spend auth gen"),
         //        group_hash::group_hash_spend_auth().into_group(),
         //    )?;
+        //ensure ak is not low order
         let ak = EdwardsVar::new_witness(ark_relations::ns!(cs, "ak"), || Ok(self.ak.0))?;
         let tmp = ak.double()?;
         let tmp = tmp.double()?;
@@ -41,9 +53,10 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 self.sig_params,
             )?;
         let pk_var: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar> =
-            schnorr::constraints::PublicKeyVar::new_witness(ark_relations::ns!(cs, "pk"), || {
-                Ok(self.ak.0)
-            })?;
+            schnorr::constraints::PublicKeyVar::new_witness(
+                ark_relations::ns!(cs, "pk_ak"),
+                || Ok(self.ak.0),
+            )?;
         let rand = UInt8::<ConstraintF>::new_witness_vec(
             ark_relations::ns!(cs, "random"),
             self.randomness,
@@ -53,16 +66,65 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 Schnorr<EdwardsProjective, Blake2b512>,
                 ConstraintF,
             >>::randomize(&params_var, &pk_var, &rand)?;
-        //SchnorrRandomizePkGadget::<EdwardsProjective, EdwardsVar>::randomize(, public_key, randomness)
-        //let alpha = FpVar::new_witness(ark_relations::ns!(cs, "alpha"), || Ok(self.alpha))?;
-        //let alpha_bits = alpha.to_bits_le()?;
-        //spend_generator.scalar_mul_le(alpha_bits.iter());
         let randomized_ak: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar> =
             schnorr::constraints::PublicKeyVar::new_input(
                 ark_relations::ns!(cs, "orig rand pk"),
                 || Ok(self.randomized_ak.0),
             )?;
         computed_rand_pk.enforce_equal(&randomized_ak)?;
+        let nk;
+        {
+            let proof_generator = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "proof generator"),
+                group_hash::group_hash_h_sapling(),
+            )?;
+
+            let nsk =
+                UInt8::new_witness_vec(ark_relations::ns!(cs, "nsk"), &self.nsk.0.to_bytes_le());
+            let nsk = nsk
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            nk = proof_generator.scalar_mul_le(nsk.iter())?;
+        }
+        let claimed_nk = <EdwardsVar as AllocVar<_, _>>::new_input(
+            ark_relations::ns!(cs, "claimed nk"),
+            || Ok(self.nk),
+        )?;
+        nk.enforce_equal(&claimed_nk)?;
+        let v_sap = group_hash::calc_v_sapling().into_group();
+        let r_sap = group_hash::calc_r_sapling().into_group();
+        let v_sap =
+            <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "v_sap"), || {
+                Ok(v_sap)
+            })?;
+        let r_sap =
+            <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "r_sap"), || {
+                Ok(r_sap)
+            })?;
+        let note_value = UInt8::new_witness_vec(
+            ark_relations::ns!(cs, "note value"),
+            &self.note_val.0.to_le_bytes(),
+        )?;
+        let not_value_bits = note_value
+            .iter()
+            .flat_map(|b| b.to_bits_le().unwrap())
+            .collect::<Vec<_>>();
+        let rcv = UInt8::new_witness_vec(
+            ark_relations::ns!(cs, "rcv"),
+            &self.rcv_old.0 .0.to_bytes_le(),
+        )?;
+        let rcv_bits = rcv
+            .iter()
+            .flat_map(|b| b.to_bits_le().unwrap())
+            .collect::<Vec<_>>();
+        let mut computed_val_cm: EdwardsVar = v_sap.scalar_mul_le(not_value_bits.iter())?;
+        computed_val_cm += r_sap.scalar_mul_le(rcv_bits.iter())?;
+        let old_val_cm = <EdwardsVar as AllocVar<_, _>>::new_input(
+            ark_relations::ns!(cs, "old_val_cm"),
+            || Ok(self.val_cm_old),
+        )?;
+        computed_val_cm.y.enforce_equal(&old_val_cm.y)?;
         Ok(())
     }
 }
@@ -70,8 +132,10 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
 #[cfg(test)]
 pub mod test {
     use super::*;
-    use crate::key_gen::Keychain;
+    use crate::commitment::homomorphic_pedersen_commitment;
     use crate::SigningKey;
+    use crate::{group_hash::group_hash_h_sapling, key_gen::Keychain};
+    use ark_ff::BigInteger;
     use ark_relations::r1cs::{
         ConstraintLayer, ConstraintSynthesizer, ConstraintSystem, TracingMode::OnlyConstraints,
     };
@@ -86,12 +150,25 @@ pub mod test {
         let kc = Keychain::from(SK);
         let randmized_pk = kc.get_randomized_ak();
         println!("rand,pk: {:?}", randmized_pk);
+        let proof_gen_key = group_hash_h_sapling();
+        let note_val = NoteValue(2);
+        let rcv = ValueCommitTrapdoor::random();
+        let val_commitment = homomorphic_pedersen_commitment(note_val.clone(), &rcv);
         let spend = Spend {
             ak: kc.ak.clone(),
             randomized_ak: randmized_pk.1,
-            randomness: randmized_pk.0.as_ref(),
+            randomness: &randmized_pk.0 .0.to_bytes_le(),
             sig_params: kc.parameters.clone(),
+            proof_generation_key: proof_gen_key,
+            nsk: kc.nsk.0,
+            nk: kc.nk.0,
+            note_val: note_val.clone(),
+            rcv_old: rcv.clone(),
+            val_cm_old: val_commitment,
         };
+        println!("note_val : {:?}", note_val);
+        println!("rcv : {:?}", rcv);
+        println!("val_com : {:?}", val_commitment);
         let mut layer = ConstraintLayer::default();
         layer.mode = OnlyConstraints;
         let subscriber = tracing_subscriber::Registry::default().with(layer);
@@ -99,6 +176,7 @@ pub mod test {
         let cs = ConstraintSystem::new_ref();
         spend.generate_constraints(cs.clone()).unwrap();
         let result = cs.is_satisfied().unwrap();
+        println!("result {:?}", result);
         if !result {
             println!("{:?}", cs.which_is_unsatisfied());
         }
