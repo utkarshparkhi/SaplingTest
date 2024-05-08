@@ -1,18 +1,26 @@
-use crate::commitment::ValueCommitTrapdoor;
+use crate::commitment::{Commitment, ValueCommitTrapdoor};
 use crate::group_hash;
 use crate::key_gen::{Params, PublicKey};
 use crate::note::NoteValue;
+use crate::pedersen_crh::Window;
+use ark_crypto_primitives::commitment::pedersen::constraints::{
+    CommGadget, ParametersVar as pdcmParamVar, RandomnessVar as pdcmRandVar,
+};
+use ark_crypto_primitives::commitment::pedersen::Randomness;
+use ark_crypto_primitives::commitment::CommitmentGadget;
+use ark_crypto_primitives::prf::blake2s::constraints::Blake2sGadget;
+use ark_crypto_primitives::prf::constraints::PRFGadget;
 use ark_crypto_primitives::signature::schnorr::constraints::SchnorrRandomizePkGadget;
 use ark_crypto_primitives::signature::schnorr::Schnorr;
 use ark_crypto_primitives::signature::SigRandomizePkGadget;
 use ark_crypto_primitives::signature::*;
-use ark_ec::AffineRepr;
 use ark_ed_on_bls12_381::EdwardsProjective;
 use ark_ed_on_bls12_381::{constraints::EdwardsVar, EdwardsAffine, Fr};
 use ark_ff::BigInteger;
 use ark_r1cs_std::fields::fp::FpVar;
-use ark_r1cs_std::prelude::*;
+use ark_r1cs_std::{prelude::*, ToConstraintFieldGadget};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
+use ark_serialize::CanonicalSerialize;
 use blake2::Blake2b512;
 pub type ConstraintF = ark_bls12_381::Fr;
 #[derive(Clone)]
@@ -29,6 +37,13 @@ pub struct Spend<'a> {
     pub val_cm_old: EdwardsAffine,
     pub note_val: NoteValue,
     pub rcv_old: ValueCommitTrapdoor,
+    pub cm_params: Commitment,
+    pub crh_rand: Randomness<EdwardsProjective>,
+    pub note_com: EdwardsAffine,
+    pub note: Vec<u8>,
+    pub ivk: Fr,
+    pub gd: EdwardsAffine,
+    pub pk_d: EdwardsAffine,
 }
 impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
     #[tracing::instrument(target = "r1cs", skip(self, cs))]
@@ -42,7 +57,9 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
         //        group_hash::group_hash_spend_auth().into_group(),
         //    )?;
         //ensure ak is not low order
-        let ak = EdwardsVar::new_witness(ark_relations::ns!(cs, "ak"), || Ok(self.ak.0))?;
+        let ak: EdwardsVar =
+            EdwardsVar::new_witness(ark_relations::ns!(cs, "ak"), || Ok(self.ak.0))?;
+
         let tmp = ak.double()?;
         let tmp = tmp.double()?;
         let tmp = tmp.double()?;
@@ -72,6 +89,7 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 || Ok(self.randomized_ak.0),
             )?;
         computed_rand_pk.enforce_equal(&randomized_ak)?;
+        //calculate nk
         let nk;
         {
             let proof_generator = <EdwardsVar as AllocVar<_, _>>::new_constant(
@@ -86,45 +104,109 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 .flat_map(|b| b.to_bits_le().unwrap())
                 .collect::<Vec<_>>();
             nk = proof_generator.scalar_mul_le(nsk.iter())?;
+            let claimed_nk = <EdwardsVar as AllocVar<_, _>>::new_input(
+                ark_relations::ns!(cs, "claimed nk"),
+                || Ok(self.nk),
+            )?;
+
+            nk.enforce_equal(&claimed_nk)?;
         }
-        let claimed_nk = <EdwardsVar as AllocVar<_, _>>::new_input(
-            ark_relations::ns!(cs, "claimed nk"),
-            || Ok(self.nk),
-        )?;
-        nk.enforce_equal(&claimed_nk)?;
-        let v_sap = group_hash::calc_v_sapling().into_group();
-        let r_sap = group_hash::calc_r_sapling().into_group();
-        let v_sap =
-            <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "v_sap"), || {
-                Ok(v_sap)
-            })?;
-        let r_sap =
-            <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "r_sap"), || {
-                Ok(r_sap)
-            })?;
-        let note_value = UInt8::new_witness_vec(
-            ark_relations::ns!(cs, "note value"),
-            &self.note_val.0.to_le_bytes(),
-        )?;
-        let not_value_bits = note_value
-            .iter()
-            .flat_map(|b| b.to_bits_le().unwrap())
-            .collect::<Vec<_>>();
-        let rcv = UInt8::new_witness_vec(
-            ark_relations::ns!(cs, "rcv"),
-            &self.rcv_old.0 .0.to_bytes_le(),
-        )?;
-        let rcv_bits = rcv
-            .iter()
-            .flat_map(|b| b.to_bits_le().unwrap())
-            .collect::<Vec<_>>();
-        let mut computed_val_cm: EdwardsVar = v_sap.scalar_mul_le(not_value_bits.iter())?;
-        computed_val_cm += r_sap.scalar_mul_le(rcv_bits.iter())?;
-        let old_val_cm = <EdwardsVar as AllocVar<_, _>>::new_input(
-            ark_relations::ns!(cs, "old_val_cm"),
-            || Ok(self.val_cm_old),
-        )?;
-        computed_val_cm.y.enforce_equal(&old_val_cm.y)?;
+        //value_commitment
+        {
+            let v_sap_raw = group_hash::calc_v_sapling();
+            let r_sap_raw = group_hash::calc_r_sapling();
+            let v_sap: EdwardsVar = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "v_sap"),
+                v_sap_raw,
+            )?;
+            let r_sap = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "r_sap"),
+                r_sap_raw,
+            )?;
+
+            let note_value = UInt8::new_witness_vec(
+                ark_relations::ns!(cs, "note_value"),
+                &Fr::from(self.note_val.0).0.to_bytes_le(),
+            )?;
+            let note_value_bits = note_value
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            let rcv = UInt8::new_witness_vec(
+                ark_relations::ns!(cs, "rcv"),
+                &self.rcv_old.0 .0.to_bytes_le(),
+            );
+            let rcv_bits = rcv
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            let computed_val_cm = &v_sap.scalar_mul_le(note_value_bits.iter())?
+                + &r_sap.scalar_mul_le(rcv_bits.iter())?;
+            let old_val_cm = <EdwardsVar as AllocVar<_, _>>::new_input(
+                ark_relations::ns!(cs, "old_val_cm"),
+                || Ok(self.val_cm_old),
+            )?;
+            computed_val_cm.enforce_equal(&old_val_cm)?;
+        }
+        //IVK
+        {
+            let mut ak_repr: [u8; 32] = [0; 32];
+            ak.value()?.serialize_compressed(&mut ak_repr[..]).unwrap();
+            let mut nk_repr: [u8; 32] = [0; 32];
+            nk.value()?.serialize_compressed(&mut nk_repr[..]).unwrap();
+            let nk_repr = UInt8::new_witness_vec(ark_relations::ns!(cs, "ivk input"), &nk_repr)?;
+            let ak_repr = Blake2sGadget::new_seed(ark_relations::ns!(cs, "seed"), &ak_repr);
+
+            let mut ivk = Blake2sGadget::evaluate(&ak_repr, &nk_repr)?;
+            let mut x = ivk.0.value()?[31];
+            x &= 0b00000111;
+            let x = UInt8::new_witness(ark_relations::ns!(cs, "truncate"), || Ok(x))?;
+            ivk.0.pop();
+            ivk.0.push(x);
+
+            println!("{:?}", ivk.0.value()?);
+            let g_d =
+                <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "g_d"), || {
+                    Ok(self.gd)
+                })?;
+            let ivk_bits = ivk
+                .0
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            //assert_eq!(ivk.0.value()?, self.ivk.0.to_bytes_le());
+            let pk_d = g_d.scalar_mul_le(ivk_bits.iter())?;
+            let claimed_pk_d = <EdwardsVar as AllocVar<_, _>>::new_input(
+                ark_relations::ns!(cs, "claimed pk"),
+                || Ok(self.pk_d),
+            )?;
+            pk_d.enforce_equal(&claimed_pk_d)?;
+        }
+        //note commitment
+        {
+            let note = UInt8::new_witness_vec(ark_relations::ns!(cs, "note"), &self.note)?;
+            assert_eq!(note.value()?, self.note);
+            let pdcm_params: pdcmParamVar<EdwardsProjective, EdwardsVar> =
+                <pdcmParamVar<_, _> as AllocVar<_, _>>::new_constant(
+                    ark_relations::ns!(cs, "crh params"),
+                    self.cm_params.params,
+                )?;
+            let pdcm_randomness =
+                pdcmRandVar::new_witness(ark_relations::ns!(cs, "crh randomness"), || {
+                    Ok(self.crh_rand)
+                })?;
+            let comm = CommGadget::<EdwardsProjective, _, Window>::commit(
+                &pdcm_params,
+                &note,
+                &pdcm_randomness,
+            )?;
+
+            let claimed_comm = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "claimed note com"),
+                self.note_com,
+            )?;
+            comm.enforce_equal(&claimed_comm)?;
+        }
         Ok(())
     }
 }
@@ -135,10 +217,16 @@ pub mod test {
     use crate::commitment::homomorphic_pedersen_commitment;
     use crate::SigningKey;
     use crate::{group_hash::group_hash_h_sapling, key_gen::Keychain};
+    use ark_crypto_primitives::commitment::{
+        pedersen::{Commitment as pdCommit, Randomness as pdRand},
+        CommitmentScheme,
+    };
+    use ark_ff::fields::PrimeField;
     use ark_ff::BigInteger;
     use ark_relations::r1cs::{
         ConstraintLayer, ConstraintSynthesizer, ConstraintSystem, TracingMode::OnlyConstraints,
     };
+    use ark_std::One;
     use tracing_subscriber::layer::SubscriberExt;
     const SK: SigningKey = &[
         24, 226, 141, 234, 92, 17, 129, 122, 238, 178, 26, 25, 152, 29, 40, 54, 142, 196, 56, 175,
@@ -154,6 +242,22 @@ pub mod test {
         let note_val = NoteValue(2);
         let rcv = ValueCommitTrapdoor::random();
         let val_commitment = homomorphic_pedersen_commitment(note_val.clone(), &rcv);
+        let comm = Commitment::setup();
+        let crh_rand = pdRand::<EdwardsProjective>(Fr::one());
+        let note_com = pdCommit::<EdwardsProjective, Window>::commit(
+            &comm.params.clone(),
+            b"hello",
+            &crh_rand,
+        )
+        .unwrap();
+        let mut kc_key = vec![];
+        kc_key.extend(kc.ak.to_repr_j());
+        kc_key.extend(kc.nk.to_repr_j());
+        println!("NOTE COM HERE{:?}", note_com);
+        println!("{:?}", note_com.is_on_curve());
+        let mut ivk: [u8; 32] = [0; 32];
+        ivk.copy_from_slice(&kc.ivk.0 .0.to_bytes_le());
+        let (_d, g_d, pk_d) = kc.get_diversified_transmission_address();
         let spend = Spend {
             ak: kc.ak.clone(),
             randomized_ak: randmized_pk.1,
@@ -165,7 +269,15 @@ pub mod test {
             note_val: note_val.clone(),
             rcv_old: rcv.clone(),
             val_cm_old: val_commitment,
+            cm_params: comm.clone(),
+            crh_rand,
+            note: b"hello".to_vec(),
+            note_com,
+            ivk: kc.ivk.0,
+            gd: g_d,
+            pk_d: pk_d.0,
         };
+        println!("ivk: {:?}", kc.ivk.0 .0.to_bytes_le());
         println!("note_val : {:?}", note_val);
         println!("rcv : {:?}", rcv);
         println!("val_com : {:?}", val_commitment);

@@ -8,7 +8,7 @@ pub struct PaymentAddress {
 }
 impl<'a> From<Keychain<'a>> for PaymentAddress {
     fn from(value: Keychain) -> Self {
-        let (d, pk_d) = value.get_diversified_transmission_address();
+        let (d, _gd, pk_d) = value.get_diversified_transmission_address();
         Self {
             diversifier: d,
             pk_d,

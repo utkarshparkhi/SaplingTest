@@ -22,9 +22,9 @@ const Y: [u8; 32] = [
     231, 232, 93, 224, 247, 249, 122, 70, 210, 73, 161, 245, 234, 81, 223, 80, 204, 72, 73, 15,
     132, 1, 201, 222, 122, 42, 223, 24, 7, 209, 182, 84,
 ];
-
+#[derive(Clone)]
 pub struct Commitment {
-    params: pedersen::Parameters<ark_ed_on_bls12_381::EdwardsProjective>,
+    pub params: pedersen::Parameters<ark_ed_on_bls12_381::EdwardsProjective>,
 }
 impl Commitment {
     pub fn setup() -> Self {
@@ -89,7 +89,7 @@ pub mod test {
         let cm = pdCommit::<ark_ed_on_bls12_381::EdwardsProjective, Window>::commit(
             &c.params, b"Helloa", &r,
         );
-        println!("com {:?}", cm.unwrap());
+        println!("com {:?}", cm.unwrap().is_on_curve());
 
         let y = [
             Y[0].to_le_bytes(),
@@ -98,6 +98,7 @@ pub mod test {
             Y[3].to_le_bytes(),
         ]
         .concat();
+
         println!("{:?}", y);
     }
     #[test]

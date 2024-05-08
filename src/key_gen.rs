@@ -66,7 +66,7 @@ impl<'a> From<SigningKey<'a>> for Keychain<'a> {
     }
 }
 impl<'a> Keychain<'a> {
-    pub fn get_diversified_transmission_address(&self) -> ([u8; 11], PublicKey) {
+    pub fn get_diversified_transmission_address(&self) -> ([u8; 11], EdwardsAffine, PublicKey) {
         let mut d: [u8; 11] = [0; 11];
         let mut gd: Option<EdwardsAffine>;
         let mut rng = thread_rng();
@@ -78,7 +78,7 @@ impl<'a> Keychain<'a> {
             }
         }
         let gd = gd.unwrap();
-        (d, PublicKey(gd.mul(self.ivk.0).into()))
+        (d, gd, PublicKey(gd.mul(self.ivk.0).into()))
     }
     pub fn default_diversifier(&self) -> Option<[u8; 11]> {
         for i in 0..=255_u8 {
@@ -126,8 +126,8 @@ mod tests {
         50, 131, 194, 125, 63, 194, 155, 101, 185, 184, 27, 4,
     ];
     const EIVK: [u8; 32] = [
-        162, 159, 59, 178, 16, 189, 223, 176, 99, 86, 247, 67, 215, 146, 154, 112, 191, 254, 50,
-        78, 104, 214, 15, 66, 181, 235, 78, 158, 91, 167, 240, 2,
+        122, 105, 186, 11, 135, 22, 135, 112, 93, 251, 210, 193, 35, 165, 84, 98, 243, 219, 2, 45,
+        188, 200, 201, 147, 251, 208, 170, 145, 247, 79, 55, 0,
     ];
     #[test]
     pub fn test_kc_from_sk() {
