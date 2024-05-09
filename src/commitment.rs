@@ -10,6 +10,7 @@ use ark_ec::CurveGroup;
 use ark_ed_on_bls12_381::Fq;
 use ark_ed_on_bls12_381::Fr;
 use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective};
+use ark_ff::BigInteger;
 use ark_ff::PrimeField;
 use ark_relations::r1cs::ConstraintSynthesizer;
 use ark_std::rand::{thread_rng, Rng};
@@ -68,6 +69,11 @@ pub fn homomorphic_pedersen_commitment(val: NoteValue, rcv: &ValueCommitTrapdoor
     let r_sap = group_hash::calc_r_sapling();
     let v = Fr::from(val.0);
     (v_sap.mul_bigint(v.0) + r_sap.mul_bigint(rcv.0 .0)).into_affine()
+}
+pub fn mixing_pedersen_hash(note_comm: EdwardsAffine, x: Fr) -> EdwardsAffine {
+    println!("pos fr{:?}", x.0.to_bytes_le());
+    let j_sap = group_hash::calc_pedersen_hash();
+    (note_comm + j_sap.mul_bigint(x.0)).into_affine()
 }
 #[cfg(test)]
 pub mod test {

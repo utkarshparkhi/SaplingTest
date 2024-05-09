@@ -8,6 +8,7 @@ pub mod output_description;
 pub mod pedersen_crh;
 pub mod signing_key;
 pub mod spend_description;
+pub mod utils;
 use ark_std::rand;
 pub mod circuit;
 use rand::Rng;

@@ -3,6 +3,7 @@ use crate::group_hash;
 use crate::key_gen::{Params, PublicKey};
 use crate::note::NoteValue;
 use crate::pedersen_crh::Window;
+use crate::spend_description::Nullifier;
 use ark_crypto_primitives::commitment::pedersen::constraints::{
     CommGadget, ParametersVar as pdcmParamVar, RandomnessVar as pdcmRandVar,
 };
@@ -18,11 +19,19 @@ use ark_ed_on_bls12_381::EdwardsProjective;
 use ark_ed_on_bls12_381::{constraints::EdwardsVar, EdwardsAffine, Fr};
 use ark_ff::BigInteger;
 use ark_r1cs_std::fields::fp::FpVar;
+use ark_r1cs_std::ToBitsGadget;
 use ark_r1cs_std::{prelude::*, ToConstraintFieldGadget};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
 use ark_serialize::CanonicalSerialize;
 use blake2::Blake2b512;
 pub type ConstraintF = ark_bls12_381::Fr;
+pub fn to_repr(affine: EdwardsVar, cs: Namespace<ConstraintF>) -> Vec<UInt8<ConstraintF>> {
+    let mut tmp: Vec<_> = vec![];
+    let x = <FpVar<_> as ToBytesGadget<_>>::to_bytes(&affine.x).unwrap();
+    let y = <FpVar<_> as ToBytesGadget<_>>::to_bytes(&affine.y).unwrap();
+    tmp.extend(y);
+    tmp
+}
 #[derive(Clone)]
 pub struct Spend<'a> {
     //pub val: NoteValue,
@@ -44,6 +53,8 @@ pub struct Spend<'a> {
     pub ivk: Fr,
     pub gd: EdwardsAffine,
     pub pk_d: EdwardsAffine,
+    pub nf_old: Nullifier,
+    pub pos: u64,
 }
 impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
     #[tracing::instrument(target = "r1cs", skip(self, cs))]
@@ -57,38 +68,44 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
         //        group_hash::group_hash_spend_auth().into_group(),
         //    )?;
         //ensure ak is not low order
-        let ak: EdwardsVar =
-            EdwardsVar::new_witness(ark_relations::ns!(cs, "ak"), || Ok(self.ak.0))?;
+        let ak;
+        {
+            ak = EdwardsVar::new_witness(ark_relations::ns!(cs, "ak"), || Ok(self.ak.0))?;
 
-        let tmp = ak.double()?;
-        let tmp = tmp.double()?;
-        let tmp = tmp.double()?;
-        tmp.x.enforce_not_equal(&FpVar::<ConstraintF>::zero())?;
-        let params_var =
-            schnorr::constraints::ParametersVar::<EdwardsProjective, EdwardsVar>::new_constant(
-                ark_relations::ns!(cs, "sig params"),
-                self.sig_params,
+            let tmp = ak.double()?;
+            let tmp = tmp.double()?;
+            let tmp = tmp.double()?;
+
+            tmp.x.enforce_not_equal(&FpVar::<ConstraintF>::zero())?;
+        }
+        //Spend Authority check
+        {
+            let params_var =
+                schnorr::constraints::ParametersVar::<EdwardsProjective, EdwardsVar>::new_constant(
+                    ark_relations::ns!(cs, "sig params"),
+                    self.sig_params,
+                )?;
+            let pk_var: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar> =
+                schnorr::constraints::PublicKeyVar::new_witness(
+                    ark_relations::ns!(cs, "pk_ak"),
+                    || Ok(self.ak.0),
+                )?;
+            let rand = UInt8::<ConstraintF>::new_witness_vec(
+                ark_relations::ns!(cs, "random"),
+                self.randomness,
             )?;
-        let pk_var: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar> =
-            schnorr::constraints::PublicKeyVar::new_witness(
-                ark_relations::ns!(cs, "pk_ak"),
-                || Ok(self.ak.0),
-            )?;
-        let rand = UInt8::<ConstraintF>::new_witness_vec(
-            ark_relations::ns!(cs, "random"),
-            self.randomness,
-        )?;
-        let computed_rand_pk =
+            let computed_rand_pk =
             <SchnorrRandomizePkGadget<EdwardsProjective, EdwardsVar> as SigRandomizePkGadget<
                 Schnorr<EdwardsProjective, Blake2b512>,
                 ConstraintF,
             >>::randomize(&params_var, &pk_var, &rand)?;
-        let randomized_ak: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar> =
-            schnorr::constraints::PublicKeyVar::new_input(
-                ark_relations::ns!(cs, "orig rand pk"),
-                || Ok(self.randomized_ak.0),
-            )?;
-        computed_rand_pk.enforce_equal(&randomized_ak)?;
+            let randomized_ak: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar> =
+                schnorr::constraints::PublicKeyVar::new_input(
+                    ark_relations::ns!(cs, "orig rand pk"),
+                    || Ok(self.randomized_ak.0),
+                )?;
+            computed_rand_pk.enforce_equal(&randomized_ak)?;
+        }
         //calculate nk
         let nk;
         {
@@ -149,10 +166,11 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
             computed_val_cm.enforce_equal(&old_val_cm)?;
         }
         //IVK
+        let mut nk_repr;
         {
             let mut ak_repr: [u8; 32] = [0; 32];
             ak.value()?.serialize_compressed(&mut ak_repr[..]).unwrap();
-            let mut nk_repr: [u8; 32] = [0; 32];
+            nk_repr = [0; 32];
             nk.value()?.serialize_compressed(&mut nk_repr[..]).unwrap();
             let nk_repr = UInt8::new_witness_vec(ark_relations::ns!(cs, "ivk input"), &nk_repr)?;
             let ak_repr = Blake2sGadget::new_seed(ark_relations::ns!(cs, "seed"), &ak_repr);
@@ -164,7 +182,6 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
             ivk.0.pop();
             ivk.0.push(x);
 
-            println!("{:?}", ivk.0.value()?);
             let g_d =
                 <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "g_d"), || {
                     Ok(self.gd)
@@ -174,7 +191,6 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 .iter()
                 .flat_map(|b| b.to_bits_le().unwrap())
                 .collect::<Vec<_>>();
-            //assert_eq!(ivk.0.value()?, self.ivk.0.to_bytes_le());
             let pk_d = g_d.scalar_mul_le(ivk_bits.iter())?;
             let claimed_pk_d = <EdwardsVar as AllocVar<_, _>>::new_input(
                 ark_relations::ns!(cs, "claimed pk"),
@@ -183,6 +199,7 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
             pk_d.enforce_equal(&claimed_pk_d)?;
         }
         //note commitment
+        let comm;
         {
             let note = UInt8::new_witness_vec(ark_relations::ns!(cs, "note"), &self.note)?;
             assert_eq!(note.value()?, self.note);
@@ -195,7 +212,7 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 pdcmRandVar::new_witness(ark_relations::ns!(cs, "crh randomness"), || {
                     Ok(self.crh_rand)
                 })?;
-            let comm = CommGadget::<EdwardsProjective, _, Window>::commit(
+            comm = CommGadget::<EdwardsProjective, _, Window>::commit(
                 &pdcm_params,
                 &note,
                 &pdcm_randomness,
@@ -207,6 +224,27 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
             )?;
             comm.enforce_equal(&claimed_comm)?;
         }
+        //Nullifier
+        {
+            let j_sap = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "J_sap"),
+                group_hash::calc_pedersen_hash(),
+            )?;
+            let pos = UInt8::new_witness_vec(
+                ark_relations::ns!(cs, "pos"),
+                &Fr::from(self.pos).0.to_bytes_le(),
+            )?;
+            let pos_bits = pos
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            let rho = comm + j_sap.scalar_mul_le(pos_bits.iter())?;
+            let rho_repr = to_repr(rho, ark_relations::ns!(cs, "repr of rho"));
+            let nk_repr = UInt8::new_witness_vec(ark_relations::ns!(cs, "ivk input"), &nk_repr)?;
+            let nf = Blake2sGadget::evaluate(&nk_repr, &rho_repr)?;
+            let nf_old = UInt8::new_witness_vec(ark_relations::ns!(cs, "nf_old"), &self.nf_old.0)?;
+            nf.0.enforce_equal(&nf_old)?;
+        }
         Ok(())
     }
 }
@@ -215,6 +253,7 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
 pub mod test {
     use super::*;
     use crate::commitment::homomorphic_pedersen_commitment;
+    use crate::spend_description::Nullifier;
     use crate::SigningKey;
     use crate::{group_hash::group_hash_h_sapling, key_gen::Keychain};
     use ark_crypto_primitives::commitment::{
@@ -258,6 +297,7 @@ pub mod test {
         let mut ivk: [u8; 32] = [0; 32];
         ivk.copy_from_slice(&kc.ivk.0 .0.to_bytes_le());
         let (_d, g_d, pk_d) = kc.get_diversified_transmission_address();
+        let nf = Nullifier::new(note_com, 4, kc.nk.0);
         let spend = Spend {
             ak: kc.ak.clone(),
             randomized_ak: randmized_pk.1,
@@ -276,6 +316,8 @@ pub mod test {
             ivk: kc.ivk.0,
             gd: g_d,
             pk_d: pk_d.0,
+            nf_old: nf,
+            pos: 4,
         };
         println!("ivk: {:?}", kc.ivk.0 .0.to_bytes_le());
         println!("note_val : {:?}", note_val);

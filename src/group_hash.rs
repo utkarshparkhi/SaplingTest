@@ -9,6 +9,7 @@ pub const DIVERSIFY_HASH: &[u8] = b"Zcash_gd";
 pub const ZCASH_H: &[u8] = b"Zcash_H_";
 pub const ZCASH_PEDERSEN_GENERATORS: &[u8] = b"Zcash_PH";
 pub const ZCASH_CV: &[u8] = b"Zcash_cv";
+pub const ZCASH_J: &[u8] = b"Zcash_J_";
 pub fn group_hash(tag: &[u8], personal: &[u8]) -> Option<EdwardsAffine> {
     let h = Params::new()
         .hash_length(32)
@@ -59,6 +60,9 @@ pub fn calc_v_sapling() -> EdwardsAffine {
 }
 pub fn calc_r_sapling() -> EdwardsAffine {
     calc_group_hash(b"r", ZCASH_CV)
+}
+pub fn calc_pedersen_hash() -> EdwardsAffine {
+    calc_group_hash(&[], ZCASH_J)
 }
 #[cfg(test)]
 pub mod test {
