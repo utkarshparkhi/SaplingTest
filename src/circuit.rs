@@ -12,7 +12,6 @@ use ark_crypto_primitives::commitment::pedersen::Randomness;
 use ark_crypto_primitives::commitment::CommitmentGadget;
 use ark_crypto_primitives::crh::constraints::TwoToOneCRHSchemeGadget;
 use ark_crypto_primitives::crh::poseidon::constraints::{CRHParametersVar, TwoToOneCRHGadget};
-use ark_crypto_primitives::merkle_tree::constraints::PathVar;
 use ark_crypto_primitives::prf::blake2s::constraints::Blake2sGadget;
 use ark_crypto_primitives::prf::constraints::PRFGadget;
 use ark_crypto_primitives::signature::schnorr::constraints::SchnorrRandomizePkGadget;
@@ -22,8 +21,10 @@ use ark_crypto_primitives::signature::*;
 use ark_ed_on_bls12_381::EdwardsProjective;
 use ark_ed_on_bls12_381::{constraints::EdwardsVar, EdwardsAffine, Fr};
 use ark_ff::BigInteger;
+use ark_r1cs_std::boolean::Boolean;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::ToBitsGadget;
+use ark_r1cs_std::ToBytesGadget;
 use ark_r1cs_std::{prelude::*, ToConstraintFieldGadget};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
 use ark_serialize::CanonicalSerialize;
@@ -31,9 +32,22 @@ use blake2::Blake2b512;
 pub type ConstraintF = ark_bls12_381::Fr;
 pub fn to_repr(affine: EdwardsVar, cs: Namespace<ConstraintF>) -> Vec<UInt8<ConstraintF>> {
     let mut tmp: Vec<_> = vec![];
-    let x = <FpVar<_> as ToBytesGadget<_>>::to_bytes(&affine.x).unwrap();
-    let y = <FpVar<_> as ToBytesGadget<_>>::to_bytes(&affine.y).unwrap();
-    tmp.extend(y);
+
+    let x: Vec<Boolean<ConstraintF>> =
+        <FpVar<_> as ToBitsGadget<_>>::to_bits_le(&affine.x).unwrap();
+
+    let mut y = <FpVar<_> as ToBitsGadget<_>>::to_bits_le(&affine.y).unwrap();
+    let msb = &x[x.len() - 1];
+    y.push(msb.clone());
+    let mut tmp1 = vec![];
+    for i in 1..y.len() + 1 {
+        tmp1.push(y[i - 1].clone());
+        if (i as i32) % 8 == 0 {
+            let ui = UInt8::from_bits_le(&tmp1);
+            tmp1.clear();
+            tmp.push(ui)
+        }
+    }
     tmp
 }
 #[derive(Clone)]
@@ -53,7 +67,6 @@ pub struct Spend<'a> {
     pub cm_params: Commitment,
     pub crh_rand: Randomness<EdwardsProjective>,
     pub note_com: EdwardsAffine,
-    pub note: Vec<u8>,
     pub ivk: Fr,
     pub gd: EdwardsAffine,
     pub pk_d: EdwardsAffine,
@@ -173,6 +186,8 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
         }
         //IVK
         let mut nk_repr;
+        let g_d: EdwardsVar;
+        let pk_d: EdwardsVar;
         {
             let mut ak_repr: [u8; 32] = [0; 32];
             ak.value()?.serialize_compressed(&mut ak_repr[..]).unwrap();
@@ -188,7 +203,7 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
             ivk.0.pop();
             ivk.0.push(x);
 
-            let g_d =
+            g_d =
                 <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "g_d"), || {
                     Ok(self.gd)
                 })?;
@@ -197,7 +212,7 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 .iter()
                 .flat_map(|b| b.to_bits_le().unwrap())
                 .collect::<Vec<_>>();
-            let pk_d = g_d.scalar_mul_le(ivk_bits.iter())?;
+            pk_d = g_d.scalar_mul_le(ivk_bits.iter())?;
             let claimed_pk_d = <EdwardsVar as AllocVar<_, _>>::new_input(
                 ark_relations::ns!(cs, "claimed pk"),
                 || Ok(self.pk_d),
@@ -207,8 +222,16 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
         //note commitment
         let comm: EdwardsVar;
         {
-            let note = UInt8::new_witness_vec(ark_relations::ns!(cs, "note"), &self.note)?;
-            assert_eq!(note.value()?, self.note);
+            let g_d_repr = to_repr(g_d.clone(), ark_relations::ns!(cs, "g_d to_repr"));
+            let pk_d_repr = to_repr(pk_d, ark_relations::ns!(cs, "pk_d to_repr"));
+            let v_old = UInt8::new_witness_vec(
+                ark_relations::ns!(cs, "note"),
+                &self.note_val.0.to_le_bytes(),
+            )?;
+            let mut note_com_inp = vec![];
+            note_com_inp.extend(g_d_repr);
+            note_com_inp.extend(pk_d_repr);
+            note_com_inp.extend(v_old);
             let pdcm_params: pdcmParamVar<EdwardsProjective, EdwardsVar> =
                 <pdcmParamVar<_, _> as AllocVar<_, _>>::new_constant(
                     ark_relations::ns!(cs, "crh params"),
@@ -218,9 +241,9 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 pdcmRandVar::new_witness(ark_relations::ns!(cs, "crh randomness"), || {
                     Ok(self.crh_rand)
                 })?;
-            comm = CommGadget::<EdwardsProjective, _, Window>::commit(
+            comm = CommGadget::<EdwardsProjective, EdwardsVar, Window>::commit(
                 &pdcm_params,
-                &note,
+                &note_com_inp,
                 &pdcm_randomness,
             )?;
 
@@ -240,19 +263,15 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 ark_relations::ns!(cs, "pos"),
                 &Fr::from(self.pos).0.to_bytes_le(),
             )?;
-            println!("pos fr: {:?}", pos.value()?);
             let pos_bits = pos
                 .iter()
                 .flat_map(|b| b.to_bits_le().unwrap())
                 .collect::<Vec<_>>();
             let rho = comm.clone() + j_sap.scalar_mul_le(pos_bits.iter())?;
             let rho_repr = to_repr(rho, ark_relations::ns!(cs, "repr of rho"));
-            println!("rho repr: {:?}", rho_repr.value()?);
             let nk_repr = UInt8::new_witness_vec(ark_relations::ns!(cs, "ivk input"), &nk_repr)?;
-            println!("nk repr: {:?}", nk_repr.value()?);
 
             let nf = Blake2sGadget::evaluate(&nk_repr, &rho_repr)?;
-            println!("nf_circ: {:?}", nf.value()?);
             let nf_old = UInt8::new_witness_vec(ark_relations::ns!(cs, "nf_old"), &self.nf_old.0)?;
             nf.0.enforce_equal(&nf_old)?;
         }
@@ -289,7 +308,110 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
         Ok(())
     }
 }
+pub struct Output {
+    pub cv_new: EdwardsAffine,
+    pub note_com_new: EdwardsAffine,
+    pub epk: EdwardsAffine,
+    pub g_d: EdwardsAffine,
+    pub pk_d: EdwardsAffine,
+    pub v_new: NoteValue,
+    pub rcv_new: ValueCommitTrapdoor,
+    pub rcm_new: Randomness<EdwardsProjective>,
+    pub esk: Fr,
+    pub note_com_params: Commitment,
+}
+impl ConstraintSynthesizer<ConstraintF> for Output {
+    fn generate_constraints(
+        self,
+        cs: ConstraintSystemRef<ConstraintF>,
+    ) -> ark_relations::r1cs::Result<()> {
+        //Note Commitment
+        let g_d =
+            <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "gd"), || {
+                Ok(self.g_d)
+            })?;
+        let pk_d =
+            <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "pk_d"), || {
+                Ok(self.pk_d)
+            })?;
+        let v_new =
+            UInt8::new_witness_vec(ark_relations::ns!(cs, "v_new"), &self.v_new.0.to_le_bytes())?;
+        let g_d_repr = to_repr(g_d.clone(), ark_relations::ns!(cs, "g_d to_repr"));
+        let pk_d_repr = to_repr(pk_d, ark_relations::ns!(cs, "pk_d to_repr"));
+        let mut note_com_inp = vec![];
+        note_com_inp.extend(g_d_repr);
+        note_com_inp.extend(pk_d_repr);
+        note_com_inp.extend(v_new);
+        let pdcm_params: pdcmParamVar<EdwardsProjective, EdwardsVar> =
+            pdcmParamVar::<EdwardsProjective, EdwardsVar>::new_witness(
+                ark_relations::ns!(cs, "note_com_params"),
+                || Ok(self.note_com_params.params),
+            )?;
+        let rcm_new =
+            pdcmRandVar::new_witness(ark_relations::ns!(cs, "rcm_new"), || Ok(self.rcm_new))?;
+        let note_com = CommGadget::<EdwardsProjective, EdwardsVar, Window>::commit(
+            &pdcm_params,
+            &note_com_inp,
+            &rcm_new,
+        )?;
+        let claimed_note_com = <EdwardsVar as AllocVar<_, _>>::new_input(
+            ark_relations::ns!(cs, "claimed note com"),
+            || Ok(self.note_com_new),
+        )?;
+        note_com.enforce_equal(&claimed_note_com)?;
+        //value commitment
+        let v_sap_raw = group_hash::calc_v_sapling();
+        let r_sap_raw = group_hash::calc_r_sapling();
+        let v_sap: EdwardsVar = <EdwardsVar as AllocVar<_, _>>::new_constant(
+            ark_relations::ns!(cs, "v_sap"),
+            v_sap_raw,
+        )?;
+        let r_sap = <EdwardsVar as AllocVar<_, _>>::new_constant(
+            ark_relations::ns!(cs, "r_sap"),
+            r_sap_raw,
+        )?;
 
+        let note_value = UInt8::new_witness_vec(
+            ark_relations::ns!(cs, "note_value"),
+            &Fr::from(self.v_new.0).0.to_bytes_le(),
+        )?;
+        let note_value_bits = note_value
+            .iter()
+            .flat_map(|b| b.to_bits_le().unwrap())
+            .collect::<Vec<_>>();
+        let rcv = UInt8::new_witness_vec(
+            ark_relations::ns!(cs, "rcv"),
+            &self.rcv_new.0 .0.to_bytes_le(),
+        );
+        let rcv_bits = rcv
+            .iter()
+            .flat_map(|b| b.to_bits_le().unwrap())
+            .collect::<Vec<_>>();
+        let computed_val_cm = &v_sap.scalar_mul_le(note_value_bits.iter())?
+            + &r_sap.scalar_mul_le(rcv_bits.iter())?;
+        let cv_new =
+            <EdwardsVar as AllocVar<_, _>>::new_input(ark_relations::ns!(cs, "cv_new"), || {
+                Ok(self.cv_new)
+            })?;
+        computed_val_cm.enforce_equal(&cv_new)?;
+
+        let esk = UInt8::new_witness_vec(ark_relations::ns!(cs, "esk"), &self.esk.0.to_bytes_le())?;
+        let epk = <EdwardsVar as AllocVar<_, _>>::new_input(ark_relations::ns!(cs, "epk"), || {
+            Ok(self.epk)
+        })?;
+        let esk_bits = esk
+            .iter()
+            .flat_map(|b| b.to_bits_le().unwrap())
+            .collect::<Vec<_>>();
+        let computed_epk = g_d.scalar_mul_le(esk_bits.iter())?;
+        epk.enforce_equal(&computed_epk)?;
+        let temp = g_d.double()?;
+        let temp = temp.double()?;
+        let temp = temp.double()?;
+        temp.x.enforce_not_equal(&FpVar::<ConstraintF>::zero())?;
+        Ok(())
+    }
+}
 #[cfg(test)]
 pub mod test {
     use super::*;
@@ -304,6 +426,7 @@ pub mod test {
     };
     use ark_crypto_primitives::crh::poseidon::TwoToOneCRH;
     use ark_crypto_primitives::crh::TwoToOneCRHScheme;
+    use ark_ec::AffineRepr;
     use ark_ff::fields::Field;
     use ark_ff::{BigInteger, BigInteger128, BigInteger256, UniformRand};
     use ark_relations::r1cs::{
@@ -320,28 +443,37 @@ pub mod test {
     #[test]
     pub fn test_ak_not_small_order() {
         let kc = Keychain::from(SK);
+        let (_d, g_d, pk_d) = kc.get_diversified_transmission_address();
         let randmized_pk = kc.get_randomized_ak();
-        println!("rand,pk: {:?}", randmized_pk);
         let proof_gen_key = group_hash_h_sapling();
         let note_val = NoteValue(2);
         let rcv = ValueCommitTrapdoor::random();
         let val_commitment = homomorphic_pedersen_commitment(note_val.clone(), &rcv);
         let comm = Commitment::setup();
         let crh_rand = pdRand::<EdwardsProjective>(Fr::one());
-        let note_com = pdCommit::<EdwardsProjective, Window>::commit(
-            &comm.params.clone(),
-            b"hello",
-            &crh_rand,
-        )
-        .unwrap();
         let mut kc_key = vec![];
         kc_key.extend(kc.ak.to_repr_j());
         kc_key.extend(kc.nk.to_repr_j());
-        println!("NOTE COM HERE{:?}", note_com);
-        println!("{:?}", note_com.is_on_curve());
+        let mut note_com_inp = vec![];
+        let mut g_d_repr: [u8; 32] = [0; 32];
+        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&g_d, &mut g_d_repr[..])
+            .expect("failed");
+
+        let mut pk_d_repr: [u8; 32] = [0; 32];
+        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&pk_d.0, &mut pk_d_repr[..])
+            .expect("failed");
+        let v_repr = note_val.0.to_le_bytes();
+        note_com_inp.extend(g_d_repr);
+        note_com_inp.extend(pk_d_repr);
+        note_com_inp.extend(v_repr);
+        let note_com = pdCommit::<EdwardsProjective, Window>::commit(
+            &comm.params.clone(),
+            &note_com_inp,
+            &crh_rand,
+        )
+        .expect("asdf");
         let mut ivk: [u8; 32] = [0; 32];
         ivk.copy_from_slice(&kc.ivk.0 .0.to_bytes_le());
-        let (_d, g_d, pk_d) = kc.get_diversified_transmission_address();
         let mut pos: u64 = 1000;
         let mut merkle_path: Vec<(ark_bls12_381::Fr, bool)> = vec![];
         let mut root_till_now: ark_bls12_381::Fr = note_com.y;
@@ -368,7 +500,6 @@ pub mod test {
             pos = pos / 2;
         }
         let nf = Nullifier::new(note_com, p, kc.nk.0);
-        println!("nf: {:?}", nf.0);
         let spend = Spend {
             auth_path: merkle_path,
             root: root_till_now,
@@ -384,7 +515,6 @@ pub mod test {
             val_cm_old: val_commitment,
             cm_params: comm.clone(),
             crh_rand,
-            note: b"hello".to_vec(),
             note_com,
             ivk: kc.ivk.0,
             gd: g_d,
@@ -392,10 +522,6 @@ pub mod test {
             nf_old: nf,
             pos: p,
         };
-        println!("ivk: {:?}", kc.ivk.0 .0.to_bytes_le());
-        println!("note_val : {:?}", note_val);
-        println!("rcv : {:?}", rcv);
-        println!("val_com : {:?}", val_commitment);
         let mut layer = ConstraintLayer::default();
         layer.mode = OnlyConstraints;
         let subscriber = tracing_subscriber::Registry::default().with(layer);
@@ -420,5 +546,59 @@ pub mod test {
         //    println!("{:?}", cs.which_is_unsatisfied());
         //}
         //assert!(result);
+    }
+    #[test]
+    pub fn test_output_circuit() {
+        let kc = Keychain::from(SK);
+        let value = NoteValue(10);
+        let rcv = ValueCommitTrapdoor::random();
+        let cv_new = homomorphic_pedersen_commitment(value.clone(), &rcv);
+        let (d, g_d, pk_d) = kc.get_diversified_transmission_address();
+
+        let cm_params = Commitment::setup();
+        let rcm = pdRand::<EdwardsProjective>(Fr::from(46));
+        let mut note_com_inp = vec![];
+        let mut g_d_repr: [u8; 32] = [0; 32];
+        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&g_d, &mut g_d_repr[..])
+            .expect("failed");
+
+        let mut pk_d_repr: [u8; 32] = [0; 32];
+        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&pk_d.0, &mut pk_d_repr[..])
+            .expect("failed");
+        let v_repr = value.0.to_le_bytes();
+        note_com_inp.extend(g_d_repr);
+        note_com_inp.extend(pk_d_repr);
+        note_com_inp.extend(v_repr);
+
+        let note_comm =
+            pdCommit::<EdwardsProjective, Window>::commit(&cm_params.params, &note_com_inp, &rcm)
+                .expect("failed");
+        let esk = Fr::from(5345345);
+        let epk = g_d.mul_bigint(esk.0);
+        let output = Output {
+            cv_new,
+            note_com_new: note_comm,
+            epk: epk.into(),
+            g_d,
+            pk_d: pk_d.0,
+            v_new: value,
+            rcv_new: rcv,
+            rcm_new: rcm,
+            esk,
+            note_com_params: cm_params,
+        };
+        let mut layer = ConstraintLayer::default();
+        layer.mode = OnlyConstraints;
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let cs = ConstraintSystem::new_ref();
+        output.generate_constraints(cs.clone()).unwrap();
+
+        let result = cs.is_satisfied().unwrap();
+        println!("result {:?}", result);
+        if !result {
+            println!("{:?}", cs.which_is_unsatisfied());
+        }
+        assert!(result);
     }
 }

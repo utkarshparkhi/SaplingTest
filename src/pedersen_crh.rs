@@ -1,18 +1,18 @@
-use ark_crypto_primitives::crh::pedersen;
+use ark_crypto_primitives::crh::pedersen::{self};
 
 use ark_ed_on_bls12_381::EdwardsProjective;
 
 use crate::group_hash;
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Window;
 impl pedersen::Window for Window {
     const WINDOW_SIZE: usize = 8;
-    const NUM_WINDOWS: usize = 63;
+    const NUM_WINDOWS: usize = 72;
 }
 
 pub fn get_pedersen_generators() -> Vec<ark_ed_on_bls12_381::EdwardsProjective> {
     let mut vc: Vec<EdwardsProjective> = vec![];
-    for i in 0..63 {
+    for i in 0..<Window as pedersen::Window>::NUM_WINDOWS {
         let eda = group_hash::pedersen_generator(&(i as u32).to_le_bytes());
         let edpt = EdwardsProjective::from(eda);
 
