@@ -4,11 +4,15 @@ use crate::key_gen::{Params, PublicKey};
 use crate::note::NoteValue;
 use crate::pedersen_crh::Window;
 use crate::spend_description::Nullifier;
+use crate::PRF::poseidon_config::poseidon_parameters;
 use ark_crypto_primitives::commitment::pedersen::constraints::{
     CommGadget, ParametersVar as pdcmParamVar, RandomnessVar as pdcmRandVar,
 };
 use ark_crypto_primitives::commitment::pedersen::Randomness;
 use ark_crypto_primitives::commitment::CommitmentGadget;
+use ark_crypto_primitives::crh::constraints::TwoToOneCRHSchemeGadget;
+use ark_crypto_primitives::crh::poseidon::constraints::{CRHParametersVar, TwoToOneCRHGadget};
+use ark_crypto_primitives::merkle_tree::constraints::PathVar;
 use ark_crypto_primitives::prf::blake2s::constraints::Blake2sGadget;
 use ark_crypto_primitives::prf::constraints::PRFGadget;
 use ark_crypto_primitives::signature::schnorr::constraints::SchnorrRandomizePkGadget;
@@ -55,6 +59,8 @@ pub struct Spend<'a> {
     pub pk_d: EdwardsAffine,
     pub nf_old: Nullifier,
     pub pos: u64,
+    pub root: ConstraintF,
+    pub auth_path: Vec<(ConstraintF, bool)>,
 }
 impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
     #[tracing::instrument(target = "r1cs", skip(self, cs))]
@@ -199,7 +205,7 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
             pk_d.enforce_equal(&claimed_pk_d)?;
         }
         //note commitment
-        let comm;
+        let comm: EdwardsVar;
         {
             let note = UInt8::new_witness_vec(ark_relations::ns!(cs, "note"), &self.note)?;
             assert_eq!(note.value()?, self.note);
@@ -234,17 +240,52 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
                 ark_relations::ns!(cs, "pos"),
                 &Fr::from(self.pos).0.to_bytes_le(),
             )?;
+            println!("pos fr: {:?}", pos.value()?);
             let pos_bits = pos
                 .iter()
                 .flat_map(|b| b.to_bits_le().unwrap())
                 .collect::<Vec<_>>();
-            let rho = comm + j_sap.scalar_mul_le(pos_bits.iter())?;
+            let rho = comm.clone() + j_sap.scalar_mul_le(pos_bits.iter())?;
             let rho_repr = to_repr(rho, ark_relations::ns!(cs, "repr of rho"));
+            println!("rho repr: {:?}", rho_repr.value()?);
             let nk_repr = UInt8::new_witness_vec(ark_relations::ns!(cs, "ivk input"), &nk_repr)?;
+            println!("nk repr: {:?}", nk_repr.value()?);
+
             let nf = Blake2sGadget::evaluate(&nk_repr, &rho_repr)?;
+            println!("nf_circ: {:?}", nf.value()?);
             let nf_old = UInt8::new_witness_vec(ark_relations::ns!(cs, "nf_old"), &self.nf_old.0)?;
             nf.0.enforce_equal(&nf_old)?;
         }
+        //Merkle Path
+        let posiedon_hash_params = CRHParametersVar::new_constant(
+            ark_relations::ns!(cs, "poseidon hash var"),
+            poseidon_parameters(),
+        )?;
+        let mut curr_node: FpVar<ConstraintF> = comm.clone().y;
+        for (i, (sibling, p)) in self.auth_path.iter().enumerate() {
+            let pos_bit =
+                Boolean::new_witness(ark_relations::ns!(cs, "flip the 2 children"), || Ok(p))?;
+            let sibling = FpVar::new_witness(ark_relations::ns!(cs, "sibling"), || Ok(sibling))?;
+            let (lef, rig);
+
+            if !*p {
+                lef = curr_node.clone();
+                rig = sibling;
+            } else {
+                lef = sibling;
+                rig = curr_node.clone();
+            }
+            curr_node = <TwoToOneCRHGadget<_> as TwoToOneCRHSchemeGadget<_, _>>::evaluate(
+                &posiedon_hash_params,
+                &lef,
+                &rig,
+            )?
+        }
+        let claimed_root =
+            FpVar::new_input(ark_relations::ns!(cs, "commitment tree root"), || {
+                Ok(self.root)
+            })?;
+        curr_node.enforce_equal(&claimed_root)?;
         Ok(())
     }
 }
@@ -255,17 +296,21 @@ pub mod test {
     use crate::commitment::homomorphic_pedersen_commitment;
     use crate::spend_description::Nullifier;
     use crate::SigningKey;
+    use crate::PRF::poseidon_config;
     use crate::{group_hash::group_hash_h_sapling, key_gen::Keychain};
     use ark_crypto_primitives::commitment::{
         pedersen::{Commitment as pdCommit, Randomness as pdRand},
         CommitmentScheme,
     };
-    use ark_ff::fields::PrimeField;
-    use ark_ff::BigInteger;
+    use ark_crypto_primitives::crh::poseidon::TwoToOneCRH;
+    use ark_crypto_primitives::crh::TwoToOneCRHScheme;
+    use ark_ff::fields::Field;
+    use ark_ff::{BigInteger, BigInteger128, BigInteger256, UniformRand};
     use ark_relations::r1cs::{
         ConstraintLayer, ConstraintSynthesizer, ConstraintSystem, TracingMode::OnlyConstraints,
     };
     use ark_std::One;
+    use rand::thread_rng;
     use tracing_subscriber::layer::SubscriberExt;
     const SK: SigningKey = &[
         24, 226, 141, 234, 92, 17, 129, 122, 238, 178, 26, 25, 152, 29, 40, 54, 142, 196, 56, 175,
@@ -297,8 +342,36 @@ pub mod test {
         let mut ivk: [u8; 32] = [0; 32];
         ivk.copy_from_slice(&kc.ivk.0 .0.to_bytes_le());
         let (_d, g_d, pk_d) = kc.get_diversified_transmission_address();
-        let nf = Nullifier::new(note_com, 4, kc.nk.0);
+        let mut pos: u64 = 1000;
+        let mut merkle_path: Vec<(ark_bls12_381::Fr, bool)> = vec![];
+        let mut root_till_now: ark_bls12_381::Fr = note_com.y;
+        let mut rng = thread_rng();
+        let p = pos.clone();
+        for (_, _) in [0..32].iter().enumerate() {
+            let (lef, rig);
+            if pos % 2 == 1 {
+                lef = ark_bls12_381::Fr::from(4);
+
+                rig = root_till_now;
+                merkle_path.push((lef, true));
+            } else {
+                rig = ark_bls12_381::Fr::from(4);
+                lef = root_till_now;
+                merkle_path.push((rig, false));
+            }
+            root_till_now = <TwoToOneCRH<_> as TwoToOneCRHScheme>::evaluate(
+                &poseidon_config::poseidon_parameters(),
+                lef,
+                rig,
+            )
+            .expect("hash failed");
+            pos = pos / 2;
+        }
+        let nf = Nullifier::new(note_com, p, kc.nk.0);
+        println!("nf: {:?}", nf.0);
         let spend = Spend {
+            auth_path: merkle_path,
+            root: root_till_now,
             ak: kc.ak.clone(),
             randomized_ak: randmized_pk.1,
             randomness: &randmized_pk.0 .0.to_bytes_le(),
@@ -317,7 +390,7 @@ pub mod test {
             gd: g_d,
             pk_d: pk_d.0,
             nf_old: nf,
-            pos: 4,
+            pos: p,
         };
         println!("ivk: {:?}", kc.ivk.0 .0.to_bytes_le());
         println!("note_val : {:?}", note_val);
@@ -329,6 +402,7 @@ pub mod test {
         let _guard = tracing::subscriber::set_default(subscriber);
         let cs = ConstraintSystem::new_ref();
         spend.generate_constraints(cs.clone()).unwrap();
+
         let result = cs.is_satisfied().unwrap();
         println!("result {:?}", result);
         if !result {

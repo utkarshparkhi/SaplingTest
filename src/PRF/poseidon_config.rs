@@ -1,7 +1,7 @@
 use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
 use ark_std::str::FromStr;
 use ark_std::{One, Zero};
-type F = ark_ed_on_bls12_381::Fr;
+type F = ark_bls12_381::Fr;
 
 pub fn poseidon_parameters() -> PoseidonConfig<F> {
     let full_rounds = 8;

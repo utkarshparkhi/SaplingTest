@@ -14,14 +14,13 @@ impl Nullifier {
             note_commitment,
             Fr::from_le_bytes_mod_order(&pos.to_le_bytes()),
         );
-        println!("r_x :{:?}", rho.x.0.to_bytes_le());
-        println!("r_y :{:?}", rho.y.0.to_bytes_le());
         let mut nk_repr = [0_u8; 32];
         let mut rho_repr = [0_u8; 32];
         <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&nk, nk_repr.as_mut()).unwrap();
         <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&rho, rho_repr.as_mut())
             .unwrap();
         println!("rho_repr: {:?}", rho_repr);
+        println!("nk_repr: {:?}", nk_repr);
         Self(Crh::find_nullifier(&nk_repr, &rho_repr))
     }
 }

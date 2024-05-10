@@ -7,7 +7,7 @@ features = ["r1cs"]
 
 [dependencies]
 ark-bls12-381 = "0.4.0"
-ark-crypto-primitives = {version= "0.4.0", features = ["signature","r1cs","prf","commitment"]}
+ark-crypto-primitives = {version= "0.4.0", features = ["merkle_tree","signature","r1cs","prf","commitment"]}
 ark-ec = "0.4.2"
 ark-ed-on-bls12-381 = {version="0.4.0", features = ["r1cs"]}
 ark-ff = "0.4.2"

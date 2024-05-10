@@ -1,9 +1,11 @@
 use crate::signing_key::SigningKey;
 use ark_crypto_primitives::prf::blake2s::Blake2sWithParameterBlock;
+use ark_crypto_primitives::prf::{Blake2s, PRF};
 use ark_ed_on_bls12_381::Fr;
 use ark_ff::PrimeField;
 use blake2::digest::Digest;
-use blake2::Blake2s256 as Blake2s;
+use blake2::Blake2s256 as Blake2so;
+
 use blake2b_simd::Params;
 const EXPAND_SEED: &[u8] = b"Zcash_ExpandSeed";
 pub const IVK: &[u8] = b"Zcashivk";
@@ -42,7 +44,7 @@ impl Crh {
         inp.extend(nk);
         println!("hash input: {:?}", inp);
         // let mut h = b2sp.evaluate(inp.as_ref());
-        let mut b2s = Blake2s::new();
+        let mut b2s = Blake2so::new();
         b2s.update(&inp);
         let mut h = [0; 32];
         h.copy_from_slice(&b2s.finalize());
@@ -50,20 +52,12 @@ impl Crh {
         Fr::from_le_bytes_mod_order(&h)
     }
     pub fn find_nullifier(nk: &[u8], rho: &[u8]) -> [u8; 32] {
-        let b2sp = Blake2sWithParameterBlock {
-            output_size: 32,
-            key_size: 0,
-            personalization: [0; 8],
-            salt: [0; 8],
-        };
-
-        let mut inp: Vec<u8> = vec![];
-        inp.extend(nk);
-        inp.extend(rho);
-        let mut b2s = Blake2s::new();
-        b2s.update(&inp);
-        let mut h = [0; 32];
-        h.copy_from_slice(&b2s.finalize());
+        let mut inp: [u8; 32] = [0; 32];
+        inp.copy_from_slice(nk);
+        let mut seed: [u8; 32] = [0; 32];
+        seed.copy_from_slice(rho);
+        let mut h = Blake2s::evaluate(&inp, &seed).expect("failed");
+        println!("Nullifier: {:?}", h);
         h
     }
 }
