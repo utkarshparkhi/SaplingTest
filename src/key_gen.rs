@@ -80,6 +80,14 @@ impl<'a> Keychain<'a> {
         let gd = gd.unwrap();
         (d, gd, PublicKey(gd.mul(self.ivk.0).into()))
     }
+    pub fn get_diversified_transmission_address_from_diversifier(
+        &self,
+        diversifier: [u8; 11],
+    ) -> (EdwardsAffine, EdwardsAffine) {
+        let gd = group_hash::diversify_hash(&diversifier).expect("wrong diversifier");
+        let pk_d = gd.mul(self.ivk.0).into();
+        (gd, pk_d)
+    }
     pub fn default_diversifier(&self) -> Option<[u8; 11]> {
         for i in 0..=255_u8 {
             let d = PrfExpand::calc_default_diversified(self.sk, i);

@@ -68,6 +68,7 @@ pub fn homomorphic_pedersen_commitment(val: NoteValue, rcv: &ValueCommitTrapdoor
     let v_sap = group_hash::calc_v_sapling();
     let r_sap = group_hash::calc_r_sapling();
     let v = Fr::from(val.0);
+    println!("note_val: {:?}", v.0.to_bytes_le());
     (v_sap.mul_bigint(v.0) + r_sap.mul_bigint(rcv.0 .0)).into_affine()
 }
 pub fn mixing_pedersen_hash(note_comm: EdwardsAffine, x: Fr) -> EdwardsAffine {
