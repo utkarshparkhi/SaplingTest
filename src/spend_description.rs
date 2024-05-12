@@ -102,7 +102,7 @@ impl SpendDescription {
         let spend_circuit = Spend {
             auth_path: merkle_path,
             root: Some(anchor),
-            ak: Some(kc.ak.clone()),
+            ak: Some(kc.ak.clone().0),
             randomized_ak: Some(randomized_ak.0.clone()),
             randomness: &oa,
             sig_params: kc.parameters.clone(),
@@ -141,7 +141,7 @@ impl SpendDescription {
         println!(
             "{:?}",
             Groth16::<ark_bls12_381::Bls12_381>::circuit_specific_setup(
-                spend_circuit.clone(),
+                dummy_circuit.clone(),
                 &mut rng
             )
         );

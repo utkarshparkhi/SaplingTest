@@ -154,28 +154,15 @@ pub mod test {
             rcm.clone(),
             esk.clone(),
         );
-        let mut cmu = [0_u8; 32];
-
-        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&od.cmu, &mut cmu[..]).unwrap();
-        let cmu = <ark_bls12_381::Fr as Field>::from_random_bytes(&cmu).unwrap();
-        let mut v_new = [0_u8; 32];
-
-        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&od.cv, &mut v_new[..])
-            .unwrap();
-        let v_new = <ark_bls12_381::Fr as Field>::from_random_bytes(&v_new).unwrap();
-        let mut epk_n = [0_u8; 32];
-
-        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&od.epk, &mut epk_n[..])
-            .unwrap();
-        let epk_n = <ark_bls12_381::Fr as Field>::from_random_bytes(&epk_n).unwrap();
+        let public_inputs = [od.cmu.x, od.cmu.y, od.cv.x, od.cv.y, od.epk.x, od.epk.y];
         println!("{:?}", od.cmu.into_group().y.0);
         println!("{:?}", od.public_inputs);
         let res = Groth16::<ark_bls12_381::Bls12_381>::verify_with_processed_vk(
             &od.verifying_key,
-            &od.public_inputs,
+            &public_inputs,
             &od.output_proof,
         );
-        println!("{:?}", res);
+        println!("res {:?}", res);
         // let output = Output {
         //     cv_new: Some(cv_new),
         //     note_com_new: Some(note_comm),
