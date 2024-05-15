@@ -1,16 +1,15 @@
 use std::borrow::Borrow;
 
+use crate::circuit::Output;
+use crate::commitment::{Commitment, ValueCommitTrapdoor};
+use crate::key_gen::{PublicKey, Signature};
+use crate::note::NoteValue;
 use ark_crypto_primitives::commitment::pedersen::Randomness;
 use ark_crypto_primitives::snark::SNARK;
 use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective};
 use ark_groth16::{prepare_verifying_key, Groth16, PreparedVerifyingKey, Proof, VerifyingKey};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
 use rand::thread_rng;
-
-use crate::circuit::Output;
-use crate::commitment::{Commitment, ValueCommitTrapdoor};
-use crate::key_gen::{PublicKey, Signature};
-use crate::note::NoteValue;
 pub struct Nullifier(pub [u8; 32]);
 pub struct OutputDescription {
     cv: EdwardsAffine,
@@ -18,7 +17,6 @@ pub struct OutputDescription {
     epk: EdwardsAffine,
     output_proof: Proof<ark_bls12_381::Bls12_381>,
     verifying_key: PreparedVerifyingKey<ark_bls12_381::Bls12_381>,
-    public_inputs: Vec<ark_bls12_381::Fr>,
 }
 impl OutputDescription {
     pub fn from_values(
@@ -45,10 +43,6 @@ impl OutputDescription {
             note_com_params: Commitment::setup(),
         };
         let mut rng = thread_rng();
-        let (pk, vk) =
-            Groth16::<ark_bls12_381::Bls12_381>::circuit_specific_setup(dummy_output, &mut rng)
-                .unwrap();
-        let pvk = prepare_verifying_key(&vk);
         let output = Output {
             cv_new: Some(cv_new),
             note_com_new: Some(note_com),
@@ -73,24 +67,17 @@ impl OutputDescription {
             esk: Some(esk),
             note_com_params: Commitment::setup(),
         };
-
+        let (pk, vk) =
+            Groth16::<ark_bls12_381::Bls12_381>::circuit_specific_setup(output, &mut rng).unwrap();
         let proof =
-            Groth16::<ark_bls12_381::Bls12_381>::prove(&pk, output, &mut rng).expect("failed");
-        let cs = ConstraintSystem::new_ref();
-        output2.generate_constraints(cs.clone()).unwrap();
-        let res = cs.is_satisfied().unwrap();
-        cs.finalize();
-        println!("res: {:?}", res);
-        let p = cs.borrow().unwrap();
-        let x = &p.instance_assignment[1..];
-        println!("inputs {:?}", x);
+            Groth16::<ark_bls12_381::Bls12_381>::prove(&pk, output2, &mut rng).expect("failed");
+        let pvk = prepare_verifying_key(&vk);
         OutputDescription {
             cv: cv_new,
             cmu: note_com,
             epk: epk.0,
             output_proof: proof,
             verifying_key: pvk,
-            public_inputs: x.into(),
         }
     }
 }
@@ -155,13 +142,12 @@ pub mod test {
             esk.clone(),
         );
         let public_inputs = [od.cmu.x, od.cmu.y, od.cv.x, od.cv.y, od.epk.x, od.epk.y];
-        println!("{:?}", od.cmu.into_group().y.0);
-        println!("{:?}", od.public_inputs);
         let res = Groth16::<ark_bls12_381::Bls12_381>::verify_with_processed_vk(
             &od.verifying_key,
             &public_inputs,
             &od.output_proof,
         );
+        println!("proof: {:?}", od.output_proof);
         println!("res {:?}", res);
         // let output = Output {
         //     cv_new: Some(cv_new),

@@ -4,15 +4,18 @@ use crate::circuit::Spend;
 use crate::commitment::{mixing_pedersen_hash, Commitment, ValueCommitTrapdoor};
 use crate::key_gen::{Keychain, PublicKey, Signature};
 use crate::note::NoteValue;
+use crate::PRF::poseidon_config::poseidon_parameters;
 use crate::PRF::prf_expand::Crh;
 use ark_crypto_primitives::commitment::pedersen::Randomness;
+use ark_crypto_primitives::crh::poseidon::TwoToOneCRH;
+use ark_crypto_primitives::crh::TwoToOneCRHScheme;
 use ark_crypto_primitives::signature::{schnorr, SignatureScheme};
 use ark_crypto_primitives::snark::SNARK;
 use ark_ed_on_bls12_381::Fr;
 use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsProjective};
 use ark_ff::BigInteger;
 use ark_ff::PrimeField;
-use ark_groth16::{Groth16, Proof};
+use ark_groth16::{prepare_verifying_key, Groth16, PreparedVerifyingKey, Proof};
 use ark_relations::r1cs::{
     ConstraintLayer, ConstraintSynthesizer, ConstraintSystem, TracingMode::OnlyConstraints,
 };
@@ -28,12 +31,16 @@ impl Nullifier {
             note_commitment,
             Fr::from_le_bytes_mod_order(&pos.to_le_bytes()),
         );
-        let mut nk_repr = [0_u8; 32];
-        let mut rho_repr = [0_u8; 32];
-        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&nk, nk_repr.as_mut()).unwrap();
-        <EdwardsAffine as CanonicalSerialize>::serialize_compressed(&rho, rho_repr.as_mut())
-            .unwrap();
-        Self(Crh::find_nullifier(&nk_repr, &rho_repr))
+        println!("nk: {:?}", nk.y.0.to_bytes_le());
+        println!("rho: {:?}", rho.y.0.to_bytes_le());
+        let val =
+            <TwoToOneCRH<_> as TwoToOneCRHScheme>::evaluate(&poseidon_parameters(), &nk.y, &rho.y)
+                .unwrap()
+                .0
+                .to_bytes_le();
+        let mut v = [0_u8; 32];
+        v.copy_from_slice(&val);
+        Self(v)
     }
 }
 #[derive(Debug)]
@@ -44,6 +51,7 @@ pub struct SpendDescription {
     rk: PublicKey,
     spend_proof: Proof<ark_bls12_381::Bls12_381>,
     sig: Signature,
+    vk: PreparedVerifyingKey<ark_bls12_381::Bls12_381>,
 }
 impl SpendDescription {
     pub fn new(
@@ -69,27 +77,6 @@ impl SpendDescription {
             }
             coeff <<= 1;
         }
-        let dummy_circuit = Spend {
-            auth_path: vec![None],
-            root: None,
-            ak: None,
-            randomized_ak: None,
-            randomness: &[None],
-            sig_params: kc.parameters.clone(),
-            nsk: &[None],
-            nk: None,
-            note_val: None,
-            rcv_old: None,
-            val_cm_old: None,
-            cm_params: None,
-            crh_rand: None,
-            note_com: note_com,
-            ivk: None,
-            gd: None,
-            pk_d: None,
-            nf_old: None,
-            pos: None,
-        };
         let a = &randomizer.0.to_bytes_le();
         let mut oa = vec![];
         for i in randomizer.0.to_bytes_le() {
@@ -100,6 +87,27 @@ impl SpendDescription {
             nsk.push(Some(i));
         }
         let spend_circuit = Spend {
+            auth_path: merkle_path.clone(),
+            root: Some(anchor),
+            ak: Some(kc.ak.clone().0),
+            randomized_ak: Some(randomized_ak.0.clone()),
+            randomness: &oa,
+            sig_params: kc.parameters.clone(),
+            nsk: &nsk,
+            nk: Some(kc.nk.0.clone()),
+            note_val: Some(note_val.clone()),
+            rcv_old: Some(rcv.clone()),
+            val_cm_old: Some(cv.into()),
+            cm_params: Some(note_comm_params.clone()),
+            crh_rand: Some(note_com_randomness.clone()),
+            note_com: note_com.clone(),
+            ivk: Some(kc.ivk.0.clone()),
+            gd: Some(gd),
+            pk_d: Some(pk_d),
+            nf_old: Some(nf.clone()),
+            pos: Some(pos),
+        };
+        let spend_circuit2 = Spend {
             auth_path: merkle_path,
             root: Some(anchor),
             ak: Some(kc.ak.clone().0),
@@ -120,36 +128,10 @@ impl SpendDescription {
             nf_old: Some(nf.clone()),
             pos: Some(pos),
         };
-
-        let mut layer = ConstraintLayer::default();
-        layer.mode = OnlyConstraints;
-        let subscriber = tracing_subscriber::Registry::default().with(layer);
-        let _guard = tracing::subscriber::set_default(subscriber);
-        let cs = ConstraintSystem::new_ref();
-        dummy_circuit
-            .clone()
-            .generate_constraints(cs.clone())
-            .unwrap();
-
-        let result = cs.is_satisfied().unwrap();
-        println!("result {:?}", result);
-        if !result {
-            println!("{:?}", cs.which_is_unsatisfied());
-        }
-        assert!(result);
         let mut rng = thread_rng();
-        println!(
-            "{:?}",
-            Groth16::<ark_bls12_381::Bls12_381>::circuit_specific_setup(
-                dummy_circuit.clone(),
-                &mut rng
-            )
-        );
-        let (pk, vk) = Groth16::<ark_bls12_381::Bls12_381>::circuit_specific_setup(
-            spend_circuit.clone(),
-            &mut rng,
-        )
-        .unwrap();
+        let (pk, vk) =
+            Groth16::<ark_bls12_381::Bls12_381>::circuit_specific_setup(spend_circuit2, &mut rng)
+                .unwrap();
         let proof = Groth16::<ark_bls12_381::Bls12_381>::prove(&pk, spend_circuit, &mut rng)
             .expect("proof failed");
         let mut spend_statement = vec![];
@@ -159,6 +141,7 @@ impl SpendDescription {
         spend_statement.extend(cv_to_bytes);
         let sk = schnorr::SecretKey(kc.ask.0 * randomizer);
         let sig = <schnorr::Schnorr<ark_ed_on_bls12_381::EdwardsProjective,Blake2b512> as SignatureScheme>::sign(&kc.parameters.clone(), &sk, &spend_statement, &mut rng).expect("signature succeeded");
+        let pvk = prepare_verifying_key(&vk);
         Self {
             cv,
             anchor,
@@ -166,6 +149,7 @@ impl SpendDescription {
             rk: randomized_ak,
             spend_proof: proof,
             sig,
+            vk: pvk,
         }
     }
 }

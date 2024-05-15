@@ -11,7 +11,9 @@ use ark_crypto_primitives::commitment::pedersen::constraints::{
 use ark_crypto_primitives::commitment::pedersen::Randomness;
 use ark_crypto_primitives::commitment::CommitmentGadget;
 use ark_crypto_primitives::crh::constraints::TwoToOneCRHSchemeGadget;
-use ark_crypto_primitives::crh::poseidon::constraints::{CRHParametersVar, TwoToOneCRHGadget};
+use ark_crypto_primitives::crh::poseidon::constraints::{
+    CRHGadget, CRHParametersVar, TwoToOneCRHGadget,
+};
 use ark_crypto_primitives::prf::blake2s::constraints::Blake2sGadget;
 use ark_crypto_primitives::prf::constraints::PRFGadget;
 use ark_crypto_primitives::signature::schnorr::constraints::SchnorrRandomizePkGadget;
@@ -23,6 +25,7 @@ use ark_ed_on_bls12_381::{constraints::EdwardsVar, EdwardsAffine, Fr};
 use ark_ff::BigInteger;
 use ark_r1cs_std::boolean::Boolean;
 use ark_r1cs_std::fields::fp::FpVar;
+use ark_r1cs_std::groups::curves::short_weierstrass::AffineVar;
 use ark_r1cs_std::ToBitsGadget;
 use ark_r1cs_std::ToBytesGadget;
 use ark_r1cs_std::{prelude::*, ToConstraintFieldGadget};
@@ -86,253 +89,261 @@ impl ConstraintSynthesizer<ConstraintF> for Spend<'_> {
             self.ak.ok_or(SynthesisError::AssignmentMissing)
         })?;
 
-        // // let tmp = ak.double()?;
-        // // let tmp = tmp.double()?;
-        // // let tmp = tmp.double()?;
-        // //
-        // ak.enforce_equal(&ak)?;
-        // //Spend Authority check
-        // {
-        //     let params_var =
-        //         schnorr::constraints::ParametersVar::<EdwardsProjective, EdwardsVar>::new_constant(
-        //             ark_relations::ns!(cs, "sig params"),
-        //             self.sig_params,
-        //         )?;
-        //     let pk_var: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar>;
-        //     if let Some(pk) = self.ak {
-        //         pk_var = schnorr::constraints::PublicKeyVar::new_witness(
-        //             ark_relations::ns!(cs, "pk_ak"),
-        //             || Ok(pk),
-        //         )?
-        //     } else {
-        //         pk_var = schnorr::constraints::PublicKeyVar::new_witness(
-        //             ark_relations::ns!(cs, "pk_ak"),
-        //             || {
-        //                 Result::<EdwardsAffine, SynthesisError>::Err(
-        //                     SynthesisError::AssignmentMissing,
-        //                 )
-        //             },
-        //         )?
-        //     }
-        //
-        //     let rand = UInt8::<ConstraintF>::new_witness_vec(
-        //         ark_relations::ns!(cs, "random"),
-        //         self.randomness,
-        //     )?;
-        //     let computed_rand_pk =
-        //     <SchnorrRandomizePkGadget<EdwardsProjective, EdwardsVar> as SigRandomizePkGadget<
-        //         Schnorr<EdwardsProjective, Blake2b512>,
-        //         ConstraintF,
-        //     >>::randomize(&params_var, &pk_var, &rand)?;
-        //     let randomized_ak: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar> =
-        //         schnorr::constraints::PublicKeyVar::new_input(
-        //             ark_relations::ns!(cs, "orig rand pk"),
-        //             || self.randomized_ak.ok_or(SynthesisError::AssignmentMissing),
-        //         )?;
-        //     computed_rand_pk.enforce_equal(&randomized_ak)?;
-        // }
-        // //calculate nk
-        // let nk;
-        // {
-        //     let proof_generator = <EdwardsVar as AllocVar<_, _>>::new_constant(
-        //         ark_relations::ns!(cs, "proof generator"),
-        //         group_hash::group_hash_h_sapling(),
-        //     )?;
-        //
-        //     let nsk = UInt8::new_witness_vec(ark_relations::ns!(cs, "nsk"), &self.nsk);
-        //     let nsk = nsk
-        //         .iter()
-        //         .flat_map(|b| b.to_bits_le().unwrap())
-        //         .collect::<Vec<_>>();
-        //     nk = proof_generator.scalar_mul_le(nsk.iter())?;
-        //     let claimed_nk = <EdwardsVar as AllocVar<_, _>>::new_input(
-        //         ark_relations::ns!(cs, "claimed nk"),
-        //         || self.nk.ok_or(SynthesisError::AssignmentMissing),
-        //     )?;
-        //     nk.enforce_equal(&claimed_nk)?;
-        // }
-        // //value_commitment
-        // {
-        //     let v_sap_raw = group_hash::calc_v_sapling();
-        //     let r_sap_raw = group_hash::calc_r_sapling();
-        //     let v_sap: EdwardsVar = <EdwardsVar as AllocVar<_, _>>::new_constant(
-        //         ark_relations::ns!(cs, "v_sap"),
-        //         v_sap_raw,
-        //     )?;
-        //     let r_sap = <EdwardsVar as AllocVar<_, _>>::new_constant(
-        //         ark_relations::ns!(cs, "r_sap"),
-        //         r_sap_raw,
-        //     )?;
-        //     let note_value;
-        //     if let Some(v) = self.note_val.clone() {
-        //         note_value = UInt8::new_witness_vec(
-        //             ark_relations::ns!(cs, "note_value"),
-        //             &Fr::from(v.0).0.to_bytes_le(),
-        //         )?;
-        //     } else {
-        //         note_value = UInt8::new_witness_vec(ark_relations::ns!(cs, "note_value"), &[None])?;
-        //     }
-        //     let note_value_bits = note_value
-        //         .iter()
-        //         .flat_map(|b| b.to_bits_le().unwrap())
-        //         .collect::<Vec<_>>();
-        //     let rcv;
-        //     if let Some(v) = self.rcv_old {
-        //         rcv = UInt8::new_witness_vec(ark_relations::ns!(cs, "rcv"), &v.0 .0.to_bytes_le());
-        //     } else {
-        //         rcv = UInt8::new_witness_vec(ark_relations::ns!(cs, "rcv"), &[None]);
-        //     }
-        //     let rcv_bits = rcv
-        //         .iter()
-        //         .flat_map(|b| b.to_bits_le().unwrap())
-        //         .collect::<Vec<_>>();
-        //     let computed_val_cm = &v_sap.scalar_mul_le(note_value_bits.iter())?
-        //         + &r_sap.scalar_mul_le(rcv_bits.iter())?;
-        //     let old_val_cm = <EdwardsVar as AllocVar<_, _>>::new_input(
-        //         ark_relations::ns!(cs, "old_val_cm"),
-        //         || self.val_cm_old.ok_or(SynthesisError::AssignmentMissing),
-        //     )?;
-        //     computed_val_cm.enforce_equal(&old_val_cm)?;
-        // }
-        // //IVK
-        // let nk_repr: Vec<_> = to_repr(nk, ark_relations::ns!(cs, "nk_repr"));
-        // let g_d: EdwardsVar;
-        // let pk_d: EdwardsVar;
-        // {
-        //     let ak_repr = to_repr(ak, ark_relations::ns!(cs, "ak_repr"));
-        //     //
-        //     let mut ivk = Blake2sGadget::evaluate(&ak_repr, &nk_repr)?;
-        //     let mut x = ivk.0.value()?[31];
-        //     x &= 0b00000111;
-        //     let x = UInt8::new_witness(ark_relations::ns!(cs, "truncate"), || Ok(x))?;
-        //     ivk.0.pop();
-        //     ivk.0.push(x);
-        //
-        //     g_d =
-        //         <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "g_d"), || {
-        //             Ok(self.gd.unwrap())
-        //         })?;
-        //     let ivk_bits = ivk
-        //         .0
-        //         .iter()
-        //         .flat_map(|b| b.to_bits_le().unwrap())
-        //         .collect::<Vec<_>>();
-        //     pk_d = g_d.scalar_mul_le(ivk_bits.iter())?;
-        //     let claimed_pk_d = <EdwardsVar as AllocVar<_, _>>::new_input(
-        //         ark_relations::ns!(cs, "claimed pk"),
-        //         || self.pk_d.ok_or(SynthesisError::AssignmentMissing),
-        //     )?;
-        //     pk_d.enforce_equal(&claimed_pk_d)?;
-        // }
-        // //note commitment
-        // let comm: EdwardsVar;
-        // {
-        //     let g_d_repr = to_repr(g_d.clone(), ark_relations::ns!(cs, "g_d to_repr"));
-        //     let pk_d_repr = to_repr(pk_d, ark_relations::ns!(cs, "pk_d to_repr"));
-        //
-        //     let v_old;
-        //     if let Some(v) = self.note_val {
-        //         v_old = UInt8::new_witness_vec(
-        //             ark_relations::ns!(cs, "note_value"),
-        //             &v.0.to_le_bytes(),
-        //         )?;
-        //     } else {
-        //         v_old = UInt8::new_witness_vec(ark_relations::ns!(cs, "note_value"), &[None])?;
-        //     }
-        //     let mut note_com_inp = vec![];
-        //     note_com_inp.extend(g_d_repr);
-        //     note_com_inp.extend(pk_d_repr);
-        //     note_com_inp.extend(v_old);
-        //     let pdcm_params: pdcmParamVar<EdwardsProjective, EdwardsVar> =
-        //         <pdcmParamVar<_, _> as AllocVar<_, _>>::new_constant(
-        //             ark_relations::ns!(cs, "crh params"),
-        //             self.cm_params.unwrap().params,
-        //         )?;
-        //     let pdcm_randomness =
-        //         pdcmRandVar::new_witness(ark_relations::ns!(cs, "crh randomness"), || {
-        //             Ok(self.crh_rand.unwrap())
-        //         })?;
-        //     comm = CommGadget::<EdwardsProjective, EdwardsVar, Window>::commit(
-        //         &pdcm_params,
-        //         &note_com_inp,
-        //         &pdcm_randomness,
-        //     )?;
-        //
-        //     let claimed_comm = <EdwardsVar as AllocVar<_, _>>::new_constant(
-        //         ark_relations::ns!(cs, "claimed note com"),
-        //         self.note_com,
-        //     )?;
-        //     // println!("comm : {:?}", comm.value()?);
-        //     // println!("claimed comm : {:?}", claimed_comm.value()?);
-        //     comm.enforce_equal(&claimed_comm)?;
-        // }
-        // //Nullifier
-        // {
-        //     let j_sap = <EdwardsVar as AllocVar<_, _>>::new_constant(
-        //         ark_relations::ns!(cs, "J_sap"),
-        //         group_hash::calc_pedersen_hash(),
-        //     )?;
-        //     let pos;
-        //     if let Some(p) = self.pos {
-        //         pos = UInt8::new_witness_vec(
-        //             ark_relations::ns!(cs, "pos"),
-        //             &Fr::from(p).0.to_bytes_le(),
-        //         )?;
-        //     } else {
-        //         pos = UInt8::new_witness_vec(ark_relations::ns!(cs, "pos"), &[None])?;
-        //     }
-        //     let pos_bits = pos
-        //         .iter()
-        //         .flat_map(|b| b.to_bits_le().unwrap())
-        //         .collect::<Vec<_>>();
-        //     let rho = comm.clone() + j_sap.scalar_mul_le(pos_bits.iter())?;
-        //     let rho_repr = to_repr(rho, ark_relations::ns!(cs, "repr of rho"));
-        //     let nf = Blake2sGadget::evaluate(&nk_repr, &rho_repr)?;
-        //     let nf_old =
-        //         UInt8::new_witness_vec(ark_relations::ns!(cs, "nf_old"), &self.nf_old.unwrap().0)?;
-        //
-        //     nf.0.enforce_equal(&nf_old)?;
-        // }
-        // //Merkle Path
-        // let posiedon_hash_params = CRHParametersVar::new_constant(
-        //     ark_relations::ns!(cs, "poseidon hash var"),
-        //     poseidon_parameters(),
-        // )?;
-        // let mut curr_node: FpVar<ConstraintF> = comm.clone().y;
-        // for (i, val) in self.auth_path.iter().enumerate() {
-        //     let pos_bit;
-        //     let sibling;
-        //     if let Some((sib, p)) = val {
-        //         pos_bit =
-        //             Boolean::new_witness(ark_relations::ns!(cs, "flip the 2 children"), || Ok(p))?;
-        //         sibling = FpVar::new_witness(ark_relations::ns!(cs, "sibling"), || Ok(sib))?;
-        //     } else {
-        //         pos_bit =
-        //             Boolean::new_witness(ark_relations::ns!(cs, "flip the 2 children"), || {
-        //                 Result::<bool, SynthesisError>::Err(SynthesisError::AssignmentMissing)
-        //             })?;
-        //         sibling = FpVar::new_witness(ark_relations::ns!(cs, "sibling"), || {
-        //             Result::<ConstraintF, SynthesisError>::Err(SynthesisError::AssignmentMissing)
-        //         })?;
-        //     }
-        //     let (lef, rig);
-        //     rig = <FpVar<_> as CondSelectGadget<_>>::conditionally_select(
-        //         &pos_bit, &curr_node, &sibling,
-        //     )?;
-        //     lef = <FpVar<_> as CondSelectGadget<_>>::conditionally_select(
-        //         &pos_bit, &sibling, &curr_node,
-        //     )?;
-        //     curr_node = <TwoToOneCRHGadget<_> as TwoToOneCRHSchemeGadget<_, _>>::evaluate(
-        //         &posiedon_hash_params,
-        //         &lef,
-        //         &rig,
-        //     )?
-        // }
-        // let claimed_root =
-        //     FpVar::new_input(ark_relations::ns!(cs, "commitment tree root"), || {
-        //         self.root.ok_or(SynthesisError::AssignmentMissing)
-        //     })?;
-        // curr_node.enforce_equal(&claimed_root)?;
+        let tmp = ak.double()?;
+        let tmp = tmp.double()?;
+        let tmp = tmp.double()?;
+
+        ak.enforce_equal(&ak)?;
+        //Spend Authority check
+        {
+            let params_var =
+                schnorr::constraints::ParametersVar::<EdwardsProjective, EdwardsVar>::new_constant(
+                    ark_relations::ns!(cs, "sig params"),
+                    self.sig_params,
+                )?;
+            let pk_var: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar>;
+            if let Some(pk) = self.ak {
+                pk_var = schnorr::constraints::PublicKeyVar::new_witness(
+                    ark_relations::ns!(cs, "pk_ak"),
+                    || Ok(pk),
+                )?
+            } else {
+                pk_var = schnorr::constraints::PublicKeyVar::new_witness(
+                    ark_relations::ns!(cs, "pk_ak"),
+                    || {
+                        Result::<EdwardsAffine, SynthesisError>::Err(
+                            SynthesisError::AssignmentMissing,
+                        )
+                    },
+                )?
+            }
+
+            let rand = UInt8::<ConstraintF>::new_witness_vec(
+                ark_relations::ns!(cs, "random"),
+                self.randomness,
+            )?;
+            let computed_rand_pk =
+            <SchnorrRandomizePkGadget<EdwardsProjective, EdwardsVar> as SigRandomizePkGadget<
+                Schnorr<EdwardsProjective, Blake2b512>,
+                ConstraintF,
+            >>::randomize(&params_var, &pk_var, &rand)?;
+            let randomized_ak: schnorr::constraints::PublicKeyVar<EdwardsProjective, EdwardsVar> =
+                schnorr::constraints::PublicKeyVar::new_input(
+                    ark_relations::ns!(cs, "orig rand pk"),
+                    || self.randomized_ak.ok_or(SynthesisError::AssignmentMissing),
+                )?;
+            computed_rand_pk.enforce_equal(&randomized_ak)?;
+        }
+        //calculate nk
+        let nk: EdwardsVar;
+        {
+            let proof_generator = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "proof generator"),
+                group_hash::group_hash_h_sapling(),
+            )?;
+
+            let nsk = UInt8::new_witness_vec(ark_relations::ns!(cs, "nsk"), &self.nsk);
+            let nsk = nsk
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            nk = proof_generator.scalar_mul_le(nsk.iter())?;
+            let claimed_nk = <EdwardsVar as AllocVar<_, _>>::new_input(
+                ark_relations::ns!(cs, "claimed nk"),
+                || self.nk.ok_or(SynthesisError::AssignmentMissing),
+            )?;
+            nk.enforce_equal(&claimed_nk)?;
+        }
+        //value_commitment
+        {
+            let v_sap_raw = group_hash::calc_v_sapling();
+            let r_sap_raw = group_hash::calc_r_sapling();
+            let v_sap: EdwardsVar = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "v_sap"),
+                v_sap_raw,
+            )?;
+            let r_sap = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "r_sap"),
+                r_sap_raw,
+            )?;
+            let note_value;
+            if let Some(v) = self.note_val.clone() {
+                note_value = UInt8::new_witness_vec(
+                    ark_relations::ns!(cs, "note_value"),
+                    &Fr::from(v.0).0.to_bytes_le(),
+                )?;
+            } else {
+                note_value = UInt8::new_witness_vec(ark_relations::ns!(cs, "note_value"), &[None])?;
+            }
+            let note_value_bits = note_value
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            let rcv;
+            if let Some(v) = self.rcv_old {
+                rcv = UInt8::new_witness_vec(ark_relations::ns!(cs, "rcv"), &v.0 .0.to_bytes_le());
+            } else {
+                rcv = UInt8::new_witness_vec(ark_relations::ns!(cs, "rcv"), &[None]);
+            }
+            let rcv_bits = rcv
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            let computed_val_cm = &v_sap.scalar_mul_le(note_value_bits.iter())?
+                + &r_sap.scalar_mul_le(rcv_bits.iter())?;
+            let old_val_cm = <EdwardsVar as AllocVar<_, _>>::new_input(
+                ark_relations::ns!(cs, "old_val_cm"),
+                || self.val_cm_old.ok_or(SynthesisError::AssignmentMissing),
+            )?;
+            computed_val_cm.enforce_equal(&old_val_cm)?;
+        }
+        //IVK
+        let nk_repr: Vec<_> = to_repr(nk.clone(), ark_relations::ns!(cs, "nk_repr"));
+        let g_d: EdwardsVar;
+        let pk_d: EdwardsVar;
+        {
+            let ak_repr = to_repr(ak, ark_relations::ns!(cs, "ak_repr"));
+            //
+            let mut ivk = Blake2sGadget::evaluate(&ak_repr, &nk_repr)?;
+            let mut x = ivk.0.value()?[31];
+            x &= 0b00000111;
+            let x = UInt8::new_witness(ark_relations::ns!(cs, "truncate"), || Ok(x))?;
+            ivk.0.pop();
+            ivk.0.push(x);
+
+            g_d =
+                <EdwardsVar as AllocVar<_, _>>::new_witness(ark_relations::ns!(cs, "g_d"), || {
+                    Ok(self.gd.unwrap())
+                })?;
+            let ivk_bits = ivk
+                .0
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            pk_d = g_d.scalar_mul_le(ivk_bits.iter())?;
+            let claimed_pk_d = <EdwardsVar as AllocVar<_, _>>::new_input(
+                ark_relations::ns!(cs, "claimed pk"),
+                || self.pk_d.ok_or(SynthesisError::AssignmentMissing),
+            )?;
+            pk_d.enforce_equal(&claimed_pk_d)?;
+        }
+        //note commitment
+        let comm: EdwardsVar;
+        {
+            let g_d_repr = to_repr(g_d.clone(), ark_relations::ns!(cs, "g_d to_repr"));
+            let pk_d_repr = to_repr(pk_d, ark_relations::ns!(cs, "pk_d to_repr"));
+
+            let v_old;
+            if let Some(v) = self.note_val {
+                v_old = UInt8::new_witness_vec(
+                    ark_relations::ns!(cs, "note_value"),
+                    &v.0.to_le_bytes(),
+                )?;
+            } else {
+                v_old = UInt8::new_witness_vec(ark_relations::ns!(cs, "note_value"), &[None])?;
+            }
+            let mut note_com_inp = vec![];
+            note_com_inp.extend(g_d_repr);
+            note_com_inp.extend(pk_d_repr);
+            note_com_inp.extend(v_old);
+            let pdcm_params: pdcmParamVar<EdwardsProjective, EdwardsVar> =
+                <pdcmParamVar<_, _> as AllocVar<_, _>>::new_constant(
+                    ark_relations::ns!(cs, "crh params"),
+                    self.cm_params.unwrap().params,
+                )?;
+            let pdcm_randomness =
+                pdcmRandVar::new_witness(ark_relations::ns!(cs, "crh randomness"), || {
+                    Ok(self.crh_rand.unwrap())
+                })?;
+            comm = CommGadget::<EdwardsProjective, EdwardsVar, Window>::commit(
+                &pdcm_params,
+                &note_com_inp,
+                &pdcm_randomness,
+            )?;
+
+            let claimed_comm = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "claimed note com"),
+                self.note_com,
+            )?;
+            // println!("comm : {:?}", comm.value()?);
+            // println!("claimed comm : {:?}", claimed_comm.value()?);
+            comm.enforce_equal(&claimed_comm)?;
+        }
+        //Nullifier
+        let posiedon_hash_params = CRHParametersVar::new_constant(
+            ark_relations::ns!(cs, "poseidon hash var"),
+            poseidon_parameters(),
+        )?;
+        {
+            let j_sap = <EdwardsVar as AllocVar<_, _>>::new_constant(
+                ark_relations::ns!(cs, "J_sap"),
+                group_hash::calc_pedersen_hash(),
+            )?;
+            let pos;
+            if let Some(p) = self.pos {
+                pos = UInt8::new_witness_vec(
+                    ark_relations::ns!(cs, "pos"),
+                    &Fr::from(p).0.to_bytes_le(),
+                )?;
+            } else {
+                pos = UInt8::new_witness_vec(ark_relations::ns!(cs, "pos"), &[None])?;
+            }
+            let pos_bits = pos
+                .iter()
+                .flat_map(|b| b.to_bits_le().unwrap())
+                .collect::<Vec<_>>();
+            let rho: EdwardsVar = comm.clone() + j_sap.scalar_mul_le(pos_bits.iter())?;
+
+            let nf = <TwoToOneCRHGadget<_> as TwoToOneCRHSchemeGadget<_, _>>::evaluate(
+                &posiedon_hash_params,
+                &nk.y,
+                &rho.y,
+            )?
+            .to_bytes()?;
+            println!("nk :{:?}", nk.y.value()?.0.to_bytes_le());
+            println!("rho:{:?}", rho.y.value()?.0.to_bytes_le());
+            let nf_old =
+                UInt8::new_witness_vec(ark_relations::ns!(cs, "nf_old"), &self.nf_old.unwrap().0)?;
+            println!("nf ={:?}", nf_old.value()?);
+            println!("circ nf = {:?}", nf.value()?);
+            nf.enforce_equal(&nf_old)?;
+        }
+        //Merkle Path
+        let mut curr_node: FpVar<ConstraintF> = comm.clone().y;
+        for (i, val) in self.auth_path.iter().enumerate() {
+            let pos_bit;
+            let sibling;
+            if let Some((sib, p)) = val {
+                pos_bit =
+                    Boolean::new_witness(ark_relations::ns!(cs, "flip the 2 children"), || Ok(p))?;
+                sibling = FpVar::new_witness(ark_relations::ns!(cs, "sibling"), || Ok(sib))?;
+            } else {
+                pos_bit =
+                    Boolean::new_witness(ark_relations::ns!(cs, "flip the 2 children"), || {
+                        Result::<bool, SynthesisError>::Err(SynthesisError::AssignmentMissing)
+                    })?;
+                sibling = FpVar::new_witness(ark_relations::ns!(cs, "sibling"), || {
+                    Result::<ConstraintF, SynthesisError>::Err(SynthesisError::AssignmentMissing)
+                })?;
+            }
+            let (lef, rig);
+            rig = <FpVar<_> as CondSelectGadget<_>>::conditionally_select(
+                &pos_bit, &curr_node, &sibling,
+            )?;
+            lef = <FpVar<_> as CondSelectGadget<_>>::conditionally_select(
+                &pos_bit, &sibling, &curr_node,
+            )?;
+            curr_node = <TwoToOneCRHGadget<_> as TwoToOneCRHSchemeGadget<_, _>>::evaluate(
+                &posiedon_hash_params,
+                &lef,
+                &rig,
+            )?;
+        }
+        let claimed_root =
+            FpVar::new_input(ark_relations::ns!(cs, "commitment tree root"), || {
+                self.root.ok_or(SynthesisError::AssignmentMissing)
+            })?;
+        curr_node.enforce_equal(&claimed_root)?;
         Ok(())
     }
 }
